@@ -1,0 +1,46 @@
+# Environment
+.env
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors/IDE
+.vscode/
+.idea/
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# Data and models (kept outside git)
+data/
+models/
+artifacts/
+results/
+
+# Logs and tmp
+logs/
+*.log
+tmp/
+
+# Docker
+*.pid
+*.pid.lock
