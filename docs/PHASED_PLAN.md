@@ -1,13 +1,13 @@
 ### Phased implementation plan for the Document Processing Service (Unstructured + Donut + LLM)
 
-This plan is derived from `initial_plan.pdf` and structured into phases with tasks, explicit exclusions, exit criteria, and checklists.
+This plan is derived from `initial_plan.pdf` and structured into phases with tasks, explicit exclusions, exit criteria, and checklists. Core technology choices are fixed in `docs/TECH_CHOICES.md` and referenced below.
 
 ## Phase 0 — Foundations and Project Setup
 - Purpose: Prepare repo, dev environment, base container, GPU support, and scaffolding.
 - Tasks:
   - Create repo structure: `api/`, `worker/`, `processing/`, `models/`, `storage/`, `configs/`, `scripts/`, `tests/`, `docker/`, `infra/`.
   - Define configuration schema (YAML/ENV) for: storage paths, OCR engine, model variants, GPU flags, retention TTL, concurrency.
-  - Build base Dockerfile with CUDA, PyTorch, Unstructured, Donut/Transformers, PaddleOCR/Tesseract, FastAPI/uvicorn, Celery/RQ, psutil.
+  - Build base Dockerfile with CUDA, PyTorch, Unstructured, Donut/Transformers, PaddleOCR (primary) + Tesseract (fallback), FastAPI/uvicorn, Celery, psutil. See `docs/TECH_CHOICES.md`.
   - Implement health endpoints: `/healthz`, `/version`.
   - Add logging (structured JSON logs) and basic metrics collection stubs.
   - Write Makefile/scripts: build, run, test, format, download-models.
@@ -32,7 +32,7 @@ This plan is derived from `initial_plan.pdf` and structured into phases with tas
   - Endpoints: `POST /upload/init`, `POST /upload/chunk`, `POST /upload/complete`, `GET /status/{file_id}`, `GET /result/{file_id}`, `DELETE /file/{file_id}`.
   - Chunk assembler with ordering validation and optional checksums.
   - Storage under `/data/uploads/{uuid}` with TTL metadata.
-  - Queue-backed worker; API enqueues and returns.
+  - Queue-backed worker (Celery + Redis); API enqueues and returns. See `docs/TECH_CHOICES.md`.
   - Idempotent uploads and safe reprocess.
 - Do not:
   - Parse documents or load ML models yet.
@@ -50,7 +50,7 @@ This plan is derived from `initial_plan.pdf` and structured into phases with tas
 - Purpose: Convert raw files into page-ordered elements; attach metadata.
 - Tasks:
   - Integrate Unstructured for PDF, DOCX, images, HTML.
-  - OCR via PaddleOCR (default) or Tesseract by `OCR_AGENT`.
+  - OCR via PaddleOCR (default, GPU) with Tesseract (CPU) as fallback by `OCR_AGENT`. See `docs/TECH_CHOICES.md`.
   - Normalize elements: type, page, bboxes, language, confidence.
   - Preserve tables as HTML with parallel plain text.
   - Group by page; stable block IDs.
@@ -97,7 +97,7 @@ This plan is derived from `initial_plan.pdf` and structured into phases with tas
 ## Phase 5 — LLM Analysis: Description, Q&A, Chunking
 - Purpose: Produce document description, per-page Q&A, and RAG chunks.
 - Tasks:
-  - Use Qwen2.5-7B-Instruct (or similar) with long context and quantization.
+  - Use Qwen2.5-7B-Instruct (or similar) with long context and quantization via vLLM (prod GPU profile). See `docs/TECH_CHOICES.md`.
   - Summary prompt; page-focused Q&A with global context; strict JSON outputs.
   - Deterministic chunker (~200–300 words, with overlap) with page references.
   - Token accounting in metrics.
@@ -160,4 +160,3 @@ This plan is derived from `initial_plan.pdf` and structured into phases with tas
 ### Repo hygiene additions
 - Provide `.env.example`; include `.env` in `.gitignore`.
 - Before each commit, review what should be ignored (artifacts, caches, datasets, model weights, secrets).
-
