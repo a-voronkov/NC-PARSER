@@ -26,6 +26,17 @@ npx @stoplight/spectral lint openapi.yaml | cat
 - POST `/upload/chunk` (query: `file_id`, `index`, `checksum?`)
 - POST `/upload/complete` (finalize by `file_id` or single-shot with file)
 - GET `/status/{file_id}`
+### Status example
+
+```bash
+curl -sf http://localhost:8080/status/<FILE_ID> | jq
+# {
+#   "file_id": "...",
+#   "status": "processing|done|queued|failed",
+#   "progress": 0.0,
+#   "timings_ms": { "parse": 500 }
+# }
+```
 - GET `/result/{file_id}`
 - DELETE `/file/{file_id}`
 

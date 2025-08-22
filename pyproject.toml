@@ -1,0 +1,69 @@
+[build-system]
+requires = ["hatchling>=1.21.1"]
+build-backend = "hatchling.build"
+
+[project]
+name = "nc-parser"
+version = "0.1.0"
+description = "Document Processing Service (FastAPI + Celery + Unstructured + OCR + LLM)"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [
+  { name = "NC Parser Team" }
+]
+dependencies = [
+  "fastapi>=0.112",
+  "uvicorn[standard]>=0.30",
+  "pydantic>=2.7",
+  "pydantic-settings>=2.2",
+  "celery>=5.3",
+  "redis>=5.0",
+  "structlog>=24.1",
+  "python-multipart>=0.0.9",
+  "pdfminer.six>=20231228",
+  "python-docx>=1.1.2",
+  "pillow>=10.3",
+  "pytesseract>=0.3.10",
+  "beautifulsoup4>=4.12",
+  "lxml>=5.2"
+]
+
+[project.optional-dependencies]
+html = [
+  "beautifulsoup4>=4.12",
+  "lxml>=5.2"
+]
+dev = [
+  "pytest>=8.2",
+  "pytest-asyncio>=0.23",
+  "pytest-cov>=5.0",
+  "ruff>=0.5",
+  "black>=24.4",
+  "mypy>=1.10",
+  "requests>=2.32",
+  "types-requests",
+  "types-redis"
+]
+
+
+
+[project.urls]
+Homepage = "https://example.com/nc-parser"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nc_parser"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.black]
+line-length = 100
+target-version = ["py312"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+
+

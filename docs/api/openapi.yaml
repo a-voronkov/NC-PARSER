@@ -252,6 +252,10 @@ components:
         error:
           type: string
           nullable: true
+        timings_ms:
+          type: object
+          additionalProperties:
+            type: number
     FinalResult:
       type: object
       required: [document_id, pages, chunks]

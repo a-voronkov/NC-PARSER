@@ -1,0 +1,60 @@
+version: "3.9"
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - NC_APP_HOST=0.0.0.0
+      - NC_APP_PORT=8080
+      - NC_LOG_LEVEL=INFO
+      - NC_DATA_DIR=/data
+      - NC_REDIS_URL=redis://redis:6379/0
+      - NC_OCR_AGENT=tesseract
+      - NC_OCR_GPU=false
+      - NC_CAPTIONING_ENABLED=false
+      - NC_DONUT_ENABLED=false
+      - NC_LLM_ENABLED=false
+    volumes:
+      - ./data:/data
+    ports:
+      - "8080:8080"
+    depends_on:
+      - redis
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["celery", "-A", "nc_parser.worker.app:celery_app", "worker", "--loglevel=INFO"]
+    environment:
+      - NC_REDIS_URL=redis://redis:6379/0
+      - NC_DATA_DIR=/data
+      - NC_LOG_LEVEL=INFO
+    volumes:
+      - ./data:/data
+    depends_on:
+      - redis
+
+  beat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["celery", "-A", "nc_parser.worker.app:celery_app", "beat", "--loglevel=INFO"]
+    environment:
+      - NC_REDIS_URL=redis://redis:6379/0
+      - NC_DATA_DIR=/data
+      - NC_LOG_LEVEL=INFO
+      - NC_RETENTION_TTL_HOURS=168
+    volumes:
+      - ./data:/data
+    depends_on:
+      - redis
+
+

@@ -1,0 +1,17 @@
+.git
+.gitignore
+.env
+.venv
+__pycache__
+dist
+build
+.pytest_cache
+.mypy_cache
+data
+models
+artifacts
+results
+.vscode
+.idea
+
+
