@@ -1,0 +1,306 @@
+openapi: 3.1.0
+info:
+  title: NC-PARSER API
+  version: 0.1.0
+  description: |
+    API for document ingestion, processing status, results retrieval, and deletion.
+    Endpoints align with the phased plan. Schemas are designed to be stable and strict.
+servers:
+  - url: http://localhost:8080
+    description: Local development
+paths:
+  /healthz:
+    get:
+      summary: Liveness probe
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthzResponse'
+  /version:
+    get:
+      summary: Service version
+      responses:
+        '200':
+          description: Version info
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VersionResponse'
+  /upload/init:
+    post:
+      summary: Initialize an upload session
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UploadInitRequest'
+      responses:
+        '200':
+          description: Upload session initialized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadInitResponse'
+  /upload/chunk:
+    post:
+      summary: Upload a chunk for an existing upload session
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      parameters:
+        - in: query
+          name: file_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - in: query
+          name: index
+          required: true
+          schema:
+            type: integer
+            minimum: 0
+        - in: query
+          name: checksum
+          required: false
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Chunk accepted
+  /upload/complete:
+    post:
+      summary: Complete upload and enqueue processing
+      requestBody:
+        required: false
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+      parameters:
+        - in: query
+          name: file_id
+          required: false
+          description: If omitted and file is provided, server treats as single-shot upload
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Enqueued for processing
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnqueueResponse'
+  /status/{file_id}:
+    get:
+      summary: Get processing status for a file
+      parameters:
+        - in: path
+          name: file_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Current status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+        '404':
+          description: Not found
+  /result/{file_id}:
+    get:
+      summary: Get final JSON result for a processed file
+      parameters:
+        - in: path
+          name: file_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Final result JSON
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinalResult'
+        '202':
+          description: Still processing
+        '404':
+          description: Not found
+  /file/{file_id}:
+    delete:
+      summary: Delete a file and all its artifacts/results
+      parameters:
+        - in: path
+          name: file_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Deleted
+        '404':
+          description: Not found
+components:
+  schemas:
+    HealthzResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ok]
+    VersionResponse:
+      type: object
+      properties:
+        version:
+          type: string
+        git_commit:
+          type: string
+        build_time:
+          type: string
+          format: date-time
+    UploadInitRequest:
+      type: object
+      properties:
+        filename:
+          type: string
+        size_bytes:
+          type: integer
+          minimum: 0
+        checksum:
+          type: string
+          description: Optional checksum of the final file (e.g., sha256)
+    UploadInitResponse:
+      type: object
+      required: [file_id]
+      properties:
+        file_id:
+          type: string
+          format: uuid
+        upload_url:
+          type: string
+          description: Optional pre-signed URL if used
+    EnqueueResponse:
+      type: object
+      required: [file_id, status]
+      properties:
+        file_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [queued, processing, done, failed]
+    StatusResponse:
+      type: object
+      required: [file_id, status]
+      properties:
+        file_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [queued, processing, done, failed]
+        progress:
+          type: number
+          minimum: 0
+          maximum: 1
+        error:
+          type: string
+          nullable: true
+    FinalResult:
+      type: object
+      required: [document_id, pages, chunks]
+      properties:
+        document_id:
+          type: string
+          format: uuid
+        document_description:
+          type: string
+        full_text:
+          type: string
+        pages:
+          type: array
+          items:
+            $ref: '#/components/schemas/Page'
+        chunks:
+          type: array
+          items:
+            $ref: '#/components/schemas/Chunk'
+        processing_metrics:
+          $ref: '#/components/schemas/ProcessingMetrics'
+    Page:
+      type: object
+      required: [index, text]
+      properties:
+        index:
+          type: integer
+          minimum: 0
+        text:
+          type: string
+        elements:
+          type: array
+          items:
+            $ref: '#/components/schemas/Element'
+        structured_data:
+          type: object
+          additionalProperties: true
+          description: Donut-derived fields for supported templates
+    Element:
+      type: object
+      properties:
+        type:
+          type: string
+        bbox:
+          type: array
+          items:
+            type: number
+          minItems: 4
+          maxItems: 4
+        page:
+          type: integer
+        language:
+          type: string
+        confidence:
+          type: number
+        description:
+          type: string
+          description: Optional caption for non-text elements
+    Chunk:
+      type: object
+      required: [text]
+      properties:
+        text:
+          type: string
+        page_start:
+          type: integer
+        page_end:
+          type: integer
+    ProcessingMetrics:
+      type: object
+      properties:
+        timings_ms:
+          type: object
+          additionalProperties:
+            type: number
+        tokens:
+          type: object
+          additionalProperties:
+            type: integer
