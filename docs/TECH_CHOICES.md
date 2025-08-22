@@ -1,67 +1,78 @@
-### Технологические выборы (OCR, очередь, LLM)
+### Technical Choices — NC-PARSER
 
-Этот документ фиксирует принятые решения для базовой конфигурации сервиса и служит ссылкой при реализации и отладке. Для деталей общего плана см. `docs/PHASED_PLAN.md`.
+This document consolidates technology selections, versioning policy, and compatibility guidance for the Document Processing Service.
 
-## OCR
-- Основной: PaddleOCR (GPU)
-- Фолбэк: Tesseract (CPU)
+---
 
-Обоснование:
-- Для топ‑10 распространённых языков (латиница, кириллица, китайский, арабский, деванагари/хинди, бенгальский и др.) PaddleOCR на GPU обеспечивает лучшее качество и скорость, особенно на CJK и арабице.
-- Tesseract остаётся простым и надёжным фолбэком без GPU и для сред с ограниченными зависимостями.
+## Language and Runtime
 
-Практика применения:
-- Детектировать наличие текстового слоя перед OCR и пропускать OCR при полноценных текстовых PDF.
-- Дефолт — PaddleOCR GPU; при недоступности GPU или ошибке модуля падать на Tesseract CPU.
-- Поддерживать выбор языка/наборов языков через конфигурацию.
+- Primary: Python (recommended: 3.12.x; consider 3.13 only if all deps compatible).
+- Process model: API (FastAPI + Uvicorn) and Worker (Celery + Redis).
 
-Чеклист OCR:
-- [ ] NVIDIA runtime доступен в контейнере, GPU видна процессу
-- [ ] Модели/языковые пакеты скачиваются оффлайн и кешируются (`HF_HOME`, `TORCH_HOME`, каталоги Paddle)
-- [ ] Детектор текстового слоя до OCR включён
-- [ ] Конфиг фолбэка: PaddleOCR → Tesseract при ошибке/таймауте/отсутствии GPU
-- [ ] Метрики по странице: длительность, агент OCR, язык, confidence
+## Core Libraries
 
-## Очередь/оркестрация
-- Выбор: Celery + Redis
+- API: FastAPI (modern async web framework), Uvicorn (ASGI server).
+- Queue/Worker: Celery (broker and result backend via Redis).
+- Parsing: Unstructured (multi-format), PDF processing stack (poppler-utils),
+  OCR: PaddleOCR (default; GPU-capable), Tesseract (fallback).
+- Vision/LLM: Transformers (Hugging Face), Donut for layout/structured fields,
+  optional vLLM for serving local instruct models (e.g., Qwen2.5-7B-Instruct).
 
-Обоснование:
-- Celery предоставляет зрелые механизмы ретраев, таймаутов, цепочек, роутинга задач и периодических задач (через beat). Redis прост в эксплуатации и достаточен для нашего профиля.
+## Containers and Base Images
 
-Рекомендованные очереди и конкурентность:
-- Очереди: `cpu`, `ocr`, `caption`, `donut`, `llm`
-- Лимит параллелизма для GPU‑тяжёлых очередей (`ocr`, `caption`, `llm`) через пулы/семафоры
-- Идемпотентность задач и ретраи с джиттером
+- CPU-only dev image: `python:3.12-slim` with required system deps (poppler, tesseract, libgl1, fonts).
+- GPU runtime: NVIDIA CUDA 12.x runtime base (e.g., `nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04`) plus Python layer or official PyTorch image matching CUDA.
+- Best practice: multi-stage build (builder → runtime), non-root user, minimal size, cache wheels.
 
-Чеклист очереди:
-- [ ] Celery настроен с Redis (URI, пулы, prefetch)
-- [ ] Раздельные очереди по шагам пайплайна и роутинг из API
-- [ ] Политики ретраев, дедупликация, идемпотентные работы
-- [ ] Планировщик TTL‑клинера (Celery beat) включён
-- [ ] Корреляционные ID в логах от API до воркеров
+## System Dependencies (apt)
 
-## LLM рантайм
-- Основной для прод: vLLM (GPU)
-- Фолбэк для оффлайн/CPU: возможно `llama.cpp/gguf` (опционально)
+- poppler-utils, tesseract-ocr (+ language packs), libgl1, libglib2.0-0, libsm6, libxrender1, libxext6, fonts (e.g., `fonts-dejavu`), `ghostscript` for some PDF workflows.
 
-Обоснование:
-- vLLM даёт высокий throughput, длинный контекст и экономию VRAM (PagedAttention), хорошо интегрируется с моделями уровня Qwen2.5‑7B‑Instruct.
-- Для локального запуска без GPU можно использовать квантованные gguf через llama.cpp; для PoC допустим Ollama, но в проде предпочтительнее прямое управление рантаймом.
+## Python Packaging and Tooling
 
-Практика применения:
-- В прод‑профиле загружать модель в vLLM; включить строгий JSON‑вывод/гайды и ретраи при невалидном JSON
-- Вести учёт токенов (prompt/response), ограничивать контекст и размер вывода
+- Package/lock: `uv` (preferred) or `pip-tools`.
+- Quality: ruff (lint), black (format), mypy (types), pytest (+ pytest-cov) for tests.
 
-Чеклист LLM:
-- [ ] vLLM развёрнут и доступен из воркеров (локально или по сети)
-- [ ] Квантованные/FP16 веса подготовлены оффлайн; кэш моделей смонтирован
-- [ ] Промпты для суммари/страничного Q&A/структурированного вывода протестированы
-- [ ] Guardrails: лимиты контекста, таймауты, повтор на невалидный JSON
-- [ ] Метрики токенов, времени, числа ретраев
+## Model and Data Policy
 
-## Профили развёртывания
-- GPU‑профиль (прод): PaddleOCR GPU, Celery+Redis, vLLM; лимиты на параллелизм GPU‑шагов
-- CPU‑профиль (fallback/локально): Tesseract, Celery+Redis, при необходимости llama.cpp/gguf
+- Models and large artifacts are not stored in git. Download at runtime or via `scripts/download-models`.
+- Provide toggles for OCR, captioning, Donut, and LLM; default to conservative settings for dev.
 
-Ссылки:
-- План фаз: `docs/PHASED_PLAN.md`
+---
+
+## Version Policy
+
+- Prefer latest stable/LTS minor versions; pin exact versions in lockfile.
+- Allow automatic patch updates via Renovate/Dependabot.
+- After any bump:
+  1) Rebuild images
+  2) Import smoke tests (torch, transformers, unstructured, paddleocr, pytesseract)
+  3) Run fixtures through pipeline and compare against golden outputs
+  4) If breakage: pin to last known-good, open an issue, document in `CHANGELOG.md`
+
+### How to find the latest stable versions
+
+- Python (uv):
+  - `uv sync --upgrade`
+  - `uv pip index versions <package> | head -n 30 | cat`
+- PyTorch + CUDA:
+  - Follow `https://pytorch.org/get-started/locally/` for correct `pip` extra index matching CUDA 12.x.
+- Transformers / Unstructured / PaddleOCR:
+  - `uv add <pkg>@latest && uv lock && uv sync` in a branch; run smoke tests.
+
+---
+
+## Observability and Security Choices
+
+- Logs: structured JSON with request/job correlation ids.
+- Metrics: Prometheus client for API and worker, include timings for OCR and model inference.
+- Tracing: OpenTelemetry (optional for internal deployments).
+- Container security: non-root, minimal capabilities; Trivy image scans; SBOM via Syft.
+
+---
+
+## Compatibility Notes
+
+- GPU: ensure driver and container CUDA versions are compatible; verify with `nvidia-smi` and torch CUDA check (`torch.cuda.is_available()`).
+- OCR: Tesseract requires proper `TESSDATA_PREFIX`; PaddleOCR requires paddlepaddle (GPU/CPU variant) alignment.
+- PDF stack: poppler-utils must be installed for Unstructured PDF processing flows.
