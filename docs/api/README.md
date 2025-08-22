@@ -48,7 +48,8 @@ curl -f -F file=@sample.pdf http://localhost:8080/upload | jq
 ```
 - Chunked:
 ```bash
-FILE_ID=$(curl -sf -X POST http://localhost:8080/upload/init -H 'Content-Type: application/json' -d '{"filename":"sample.pdf","size_bytes":123}' | jq -r .file_id)
+SHA256=$(sha256sum sample.pdf | cut -d ' ' -f1)
+FILE_ID=$(curl -sf -X POST http://localhost:8080/upload/init -H 'Content-Type: application/json' -d '{"filename":"sample.pdf","size_bytes":123, "checksum":"'"$SHA256"'"}' | jq -r .file_id)
 # For each chunk i:
 curl -sf --data-binary @chunk_0.bin "http://localhost:8080/upload/chunk?file_id=$FILE_ID&index=0&checksum=..."
 # Complete:

@@ -9,7 +9,8 @@ $ErrorActionPreference = 'Stop'
 if (-not (Test-Path $FilePath)) { throw "File not found: $FilePath" }
 
 # Init
-$initBody = @{ filename = [IO.Path]::GetFileName($FilePath); size_bytes = (Get-Item $FilePath).Length } | ConvertTo-Json -Compress
+$sha256 = (Get-FileHash -Algorithm SHA256 -Path $FilePath).Hash.ToLower()
+$initBody = @{ filename = [IO.Path]::GetFileName($FilePath); size_bytes = (Get-Item $FilePath).Length; checksum = $sha256 } | ConvertTo-Json -Compress
 $initResp = Invoke-RestMethod -Method Post -Uri "$BaseUrl/upload/init" -ContentType 'application/json' -Body $initBody
 $fileId = $initResp.file_id
 Write-Host "file_id=$fileId"

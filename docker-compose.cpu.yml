@@ -39,6 +39,8 @@ services:
       - NC_LOG_LEVEL=INFO
     volumes:
       - ./data:/data
+    ports:
+      - "9100:9100"
     depends_on:
       - redis
 

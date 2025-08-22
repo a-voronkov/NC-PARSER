@@ -8,6 +8,7 @@ from nc_parser.api.routes.health import router as health_router
 from nc_parser.api.routes.upload import router as upload_router
 from nc_parser.core.logging import setup_structlog
 from nc_parser.core.settings import get_settings
+from nc_parser.core.metrics import metrics_endpoint, metrics_middleware
 
 
 def create_app() -> FastAPI:
@@ -15,6 +16,8 @@ def create_app() -> FastAPI:
     setup_structlog(settings.log_level)
 
     app = FastAPI(title="NC-PARSER API", version="0.1.0")
+    app.add_route("/metrics", metrics_endpoint, methods=["GET"])  # Prometheus scrape
+    app.middleware("http")(metrics_middleware)
 
     # Ensure data directories exist on startup
     @app.on_event("startup")

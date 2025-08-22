@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Optional
 from uuid import UUID, uuid4
+import hashlib
 
 from nc_parser.core.settings import get_settings
 
@@ -123,6 +124,14 @@ def get_uploaded_file_path(file_id: UUID) -> Path:
         if c.name != "meta.json" and c.is_file() and c.name != "chunks":
             return c
     raise FileNotFoundError("Uploaded file not found")
+
+
+def sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def save_celery_task_id(file_id: UUID, task_id: str) -> None:

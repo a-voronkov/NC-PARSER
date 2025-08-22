@@ -4,7 +4,7 @@ from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from nc_parser.storage import files as storage
 from nc_parser.worker.app import celery_app
@@ -43,7 +43,7 @@ async def upload_chunk(
     if not data:
         raise HTTPException(status_code=400, detail="Empty chunk body")
     storage.append_chunk(file_id, index, data)
-    return JSONResponse(status_code=204, content=None)
+    return Response(status_code=204)
 
 
 @router.post("/upload/complete")
@@ -59,7 +59,17 @@ async def upload_complete(
         return JSONResponse({"file_id": str(file_id2), "status": "queued"})
     if file_id is None:
         raise HTTPException(status_code=400, detail="file_id or file must be provided")
-    storage.assemble_file(file_id)
+    assembled = storage.assemble_file(file_id)
+    # If checksum was provided at init, verify
+    try:
+        meta = storage.UploadMeta.from_file(storage._meta_path(file_id))  # type: ignore[attr-defined]
+        if meta.checksum:
+            digest = storage.sha256_file(assembled)
+            if digest != meta.checksum:
+                storage.write_status(file_id, status="failed", error="checksum_mismatch", progress=0.0)
+                raise HTTPException(status_code=400, detail="checksum mismatch")
+    except FileNotFoundError:
+        pass
     storage.write_status(file_id, status="queued", progress=0.0)
     task = celery_app.send_task("nc_parser.process_file", args=[str(file_id)])
     storage.save_celery_task_id(file_id, task.id)
@@ -117,12 +127,12 @@ def result(file_id: UUID) -> JSONResponse:
         data = storage.read_result(file_id)
         return JSONResponse(data)
     except FileNotFoundError:
-        return JSONResponse(status_code=202, content=None)
+        return Response(status_code=202)
 
 
 @router.delete("/file/{file_id}")
 def delete_file(file_id: UUID) -> JSONResponse:
     storage.delete_all(file_id)
-    return JSONResponse(status_code=204, content=None)
+    return Response(status_code=204)
 
 

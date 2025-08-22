@@ -26,14 +26,22 @@ dependencies = [
   "pillow>=10.3",
   "pytesseract>=0.3.10",
   "beautifulsoup4>=4.12",
-  "lxml>=5.2"
+  "lxml>=5.2",
+  "pdfplumber>=0.11.4"
+  ,
+  "prometheus-client>=0.20"
+  ,
+  "pdf2image>=1.17.0"
+  ,
+  "charset-normalizer>=3.3"
+  ,
+  "ftfy>=6.2"
+  ,
+  "pypdf>=4.2"
 ]
 
 [project.optional-dependencies]
-html = [
-  "beautifulsoup4>=4.12",
-  "lxml>=5.2"
-]
+html = []
 dev = [
   "pytest>=8.2",
   "pytest-asyncio>=0.23",

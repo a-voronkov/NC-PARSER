@@ -35,6 +35,11 @@ Exit criteria: Single-shot+chunked flows pass, status transitions, deletion — 
 
 Exit criteria: базовый парсинг для текстовых PDF, сканов и изображений — Частично достигнуто (PDF/MD/HTML/IMG/DOCX работают, таблицы/метрики в плане).
 
+## Phase 3 — Visual Elements Description (Captioning)
+- [x] Каркас captioning (stub) и интеграция по флагу
+- [ ] BLIP-2 backend (GPU) — планируется на GPU-сервере
+- [ ] Heuristics/батчинг/троттлинг
+
 ## Notes
 - Local profile is CPU-only; OCR/Captioning/Donut/LLM toggles are off by default.
 - Next: verify chunked flow with fixtures; implement TTL stub; improve status transitions (queued/processing/done).

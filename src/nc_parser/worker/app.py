@@ -3,10 +3,13 @@ from __future__ import annotations
 from celery import Celery
 
 from nc_parser.core.settings import get_settings
+from nc_parser.core.worker_metrics import start_worker_metrics_server
 
 
 def create_celery() -> Celery:
     settings = get_settings()
+    # Start Prometheus metrics server for worker
+    start_worker_metrics_server(settings.worker_metrics_port)
     app = Celery(
         "nc_parser",
         broker=settings.redis_url,

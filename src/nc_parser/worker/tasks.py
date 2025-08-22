@@ -10,15 +10,22 @@ from nc_parser.worker.app import celery_app
 from nc_parser.core.settings import get_settings
 from pathlib import Path
 import time
+from nc_parser.core.worker_metrics import observe_task
+from nc_parser.processing.captioning import caption_image_stub
 
 
 @celery_app.task(name="nc_parser.process_file")
+@observe_task("nc_parser.process_file")
 def process_file(file_id: str) -> dict[str, Any]:
     """Process file and write a dummy result; placeholder for later phases."""
     # Update status: processing start
     write_status(UUID(file_id), status="processing", progress=0.1)
     input_path = get_uploaded_file_path(UUID(file_id))
     parsed = parse_document_to_text(input_path)
+    # Optional captioning (stub): if enabled and input is image
+    if get_settings().captioning_enabled and input_path.suffix.lower() in {".png", ".jpg", ".jpeg", ".bmp", ".tiff"}:
+        cap = caption_image_stub(input_path)
+        parsed.pages.append({"index": len(parsed.pages), "text": cap.text})
     result = {
         "document_id": file_id,
         "document_description": "Auto-parsed document",

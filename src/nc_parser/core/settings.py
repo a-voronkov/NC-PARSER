@@ -24,6 +24,7 @@ class AppSettings(BaseSettings):
     # Queue/Worker
     redis_url: str = Field(default="redis://localhost:6379/0")
     retention_ttl_hours: int = Field(default=168)  # 7 days
+    worker_metrics_port: int = Field(default=9100)
 
     # Features & OCR
     ocr_agent: str = Field(default="tesseract")  # paddle|tesseract
@@ -31,6 +32,11 @@ class AppSettings(BaseSettings):
     captioning_enabled: bool = Field(default=False)
     donut_enabled: bool = Field(default=False)
     llm_enabled: bool = Field(default=False)
+    ocr_langs: str = Field(default="eng")
+    ocr_tesseract_psm: int = Field(default=6)  # Assume a block of text
+    ocr_pdf_page_limit: int = Field(default=10)  # Limit pages for OCR fallback
+    ocr_pdf_max_mb: int = Field(default=50)  # Skip OCR if file bigger than this
+    ocr_pdf_max_pages: int = Field(default=300)  # Skip OCR if too many pages
 
     # Build metadata (populated by CI or docker build args)
     build_version: str | None = Field(default=os.getenv("BUILD_VERSION"))
