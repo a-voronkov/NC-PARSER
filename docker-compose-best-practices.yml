@@ -87,7 +87,7 @@ services:
 
   # Nextcloud Application
   nextcloud:
-    image: nextcloud:31-apache
+    image: nextcloud:30-apache
     container_name: nextcloud
     restart: unless-stopped
     depends_on:
@@ -165,7 +165,7 @@ services:
 
   # Nextcloud Cron Job
   nextcloud-cron:
-    image: nextcloud:31-apache
+    image: nextcloud:30-apache
     container_name: nextcloud-cron
     restart: unless-stopped
     depends_on:
