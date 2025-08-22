@@ -29,6 +29,33 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/VersionResponse'
+  /upload:
+    post:
+      summary: Single-shot upload and enqueue processing
+      description: |
+        Upload a single file as multipart/form-data. Server stores it and enqueues processing.
+        Use for files that fit within configured HTTP body limits.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                filename:
+                  type: string
+                  description: Optional override for filename
+      responses:
+        '200':
+          description: Enqueued for processing
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnqueueResponse'
   /upload/init:
     post:
       summary: Initialize an upload session

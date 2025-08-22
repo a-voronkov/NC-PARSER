@@ -50,6 +50,7 @@ This document expands `docs/PHASED_PLAN.md` into atomic steps with explicit inpu
   - Basic FastAPI skeleton with routing.
 - Actions
   1) Implement endpoints:
+     - `POST /upload` → single-shot upload (multipart/form-data) and enqueue processing.
      - `POST /upload/init` → returns `file_id` and upload token/URL (optional).
      - `POST /upload/chunk` → append chunk with ordering, checksum (optional).
      - `POST /upload/complete` → finalize file, validate size/checksum, enqueue processing job.
@@ -63,7 +64,12 @@ This document expands `docs/PHASED_PLAN.md` into atomic steps with explicit inpu
   - Start Redis (local): `docker run -d --name redis -p 6379:6379 redis:7-alpine`
   - Start app: `docker run --rm --env-file .env --network host nc-parser:local`
   - Smoke: `curl -f http://localhost:8080/healthz | cat`
-  - Upload flow: use `curl -F file=@sample.pdf http://localhost:8080/upload/complete | cat` (single-shot path for small files) and then check status, result.
+  - Upload flow:
+  - Single-shot: `curl -f -F file=@sample.pdf http://localhost:8080/upload | cat`
+  - Chunked: init → N x chunk → complete
+    - `curl -f -X POST http://localhost:8080/upload/init -H 'Content-Type: application/json' -d '{"filename":"sample.pdf","size_bytes":123}' | jq -r .file_id`
+    - `curl -f --data-binary @chunk.bin "http://localhost:8080/upload/chunk?file_id=$FILE_ID&index=0&checksum=..."`
+    - `curl -f -X POST "http://localhost:8080/upload/complete?file_id=$FILE_ID" | cat`
 - Success criteria
   - Both single-shot and chunked uploads succeed for small files.
   - Status transitions reflect queue processing lifecycle.
