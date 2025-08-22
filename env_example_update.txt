@@ -1,0 +1,49 @@
+# Domain for Nextcloud
+NEXTCLOUD_DOMAIN=ncrag.voronkov.club
+LETSENCRYPT_EMAIL=admin@voronkov.club
+
+# Nextcloud Authentication
+NEXTCLOUD_URL=https://ncrag.voronkov.club
+NEXTCLOUD_USER=admin
+
+# Frontend login password (used for web interface login)
+NEXTCLOUD_PASS=your_secure_password_here
+NEXTCLOUD_ADMIN_USER=admin
+NEXTCLOUD_ADMIN_PASSWORD=your_secure_password_here
+
+# IMPORTANT: NEXTCLOUD_PASSWORD environment variable should contain
+# the same password as NEXTCLOUD_PASS/NEXTCLOUD_ADMIN_PASSWORD
+# This is the password used for logging into the web interface
+
+# API access token (different from web login password)
+# This is used for API calls and app integrations
+NEXTCLOUD_APP_PASSWORD=your_api_token_here
+
+NEXTCLOUD_TRUSTED_DOMAINS=ncrag.voronkov.club
+
+# Postgres for Nextcloud
+POSTGRES_DB=nextcloud
+POSTGRES_USER=nextcloud
+POSTGRES_PASSWORD=nextcloudpass
+
+# RabbitMQ
+RABBITMQ_URL=amqp://user:pass@rabbitmq:5672/
+
+# Qdrant
+QDRANT_URL=http://qdrant:6333
+
+# Parser
+PARSER_URL=http://mock-parser:8080
+PARSER_SECRET=changeme
+
+# Public base URL for webhooks
+PUBLIC_BASE_URL=https://ncrag.voronkov.club
+
+# Embeddings
+OLLAMA_URL=http://ollama:11434
+OLLAMA_BASIC_AUTH=user:pass
+OLLAMA_EMBED_MODEL=nomic-embed-text
+
+# Tenant default
+TENANT_DEFAULT=default
+WEBHOOK_SECRET=7e115c142bfaa2824b9db54ae6deecd4
