@@ -1,0 +1,167 @@
+services:
+  traefik:
+    image: traefik:v3.5
+    container_name: traefik
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --providers.docker.network=nc-rag_backend
+      - --entrypoints.web.address=:80
+      - --entrypoints.websecure.address=:443
+      - --entrypoints.web.http.redirections.entryPoint.to=websecure
+      - --entrypoints.web.http.redirections.entryPoint.scheme=https
+      - --certificatesresolvers.le.acme.email=admin@voronkov.club
+      - --certificatesresolvers.le.acme.storage=/letsencrypt/acme.json
+      - --certificatesresolvers.le.acme.httpchallenge=true
+      - --certificatesresolvers.le.acme.httpchallenge.entrypoint=web
+      - --api.dashboard=true
+      - --log.level=INFO
+      - --accesslog=true
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.middlewares.nodered-auth.basicauth.usersfile=/etc/traefik/.htpasswd"
+    ports:
+      - 80:80
+      - 443:443
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik_letsencrypt:/letsencrypt
+      - ./.htpasswd:/etc/traefik/.htpasswd:ro
+    restart: unless-stopped
+    networks:
+      - web
+      - backend
+
+  db:
+    image: postgres:17
+    container_name: nc-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: nextcloud
+      POSTGRES_USER: nextcloud
+      POSTGRES_PASSWORD: nextcloudpass
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    networks:
+      - backend
+
+  redis:
+    image: redis:7-alpine
+    container_name: nc-redis
+    command: redis-server --appendonly no
+    restart: unless-stopped
+    networks:
+      - backend
+
+  memcached:
+    image: memcached:1.6-alpine
+    container_name: nc-memcached
+    restart: unless-stopped
+    networks:
+      - backend
+
+  nextcloud:
+    image: nextcloud:30-apache
+    container_name: nextcloud
+    depends_on:
+      - db
+      - redis
+      - memcached
+    restart: unless-stopped
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_DB: nextcloud
+      POSTGRES_USER: nextcloud
+      POSTGRES_PASSWORD: nextcloudpass
+      NEXTCLOUD_ADMIN_USER: admin
+      NEXTCLOUD_ADMIN_PASSWORD: j*yDCX<4ubIj_.w##>lhxDc?
+      NEXTCLOUD_TRUSTED_DOMAINS: ncrag.voronkov.club
+      REDIS_HOST: redis
+      REDIS_HOST_PORT: 6379
+      REDIS_HOST_PASSWORD: 
+      MEMCACHED_HOST: memcached
+      MEMCACHED_PORT: 11211
+    labels:
+      - traefik.enable=true
+      - "traefik.http.routers.nextcloud.rule=Host(`ncrag.voronkov.club`) && !PathPrefix(`/nodered`)"
+      - traefik.http.routers.nextcloud.entrypoints=websecure
+      - traefik.http.routers.nextcloud.tls.certresolver=le
+      - traefik.http.routers.nextcloud.priority=1
+      - traefik.http.services.nextcloud.loadbalancer.server.port=80
+      - traefik.docker.network=nc-rag_backend
+    volumes:
+      - nextcloud_data:/var/www/html
+    networks:
+      - backend
+
+  nextcloud-cron:
+    image: nextcloud:30-apache
+    container_name: nextcloud-cron
+    restart: unless-stopped
+    depends_on:
+      - db
+      - nextcloud
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_DB: nextcloud
+      POSTGRES_USER: nextcloud
+      POSTGRES_PASSWORD: nextcloudpass
+    entrypoint: /cron.sh
+    volumes:
+      - nextcloud_data:/var/www/html
+    networks:
+      - backend
+
+  mock-parser:
+    build:
+      context: ./services/mock-parser
+    container_name: mock-parser
+    environment:
+      - UVICORN_WORKERS=1
+    restart: unless-stopped
+    networks:
+      - backend
+
+  node-red:
+    image: nodered/node-red:4.1
+    container_name: node-red
+    environment:
+      - TZ=UTC
+      - NODE_RED_ENABLE_SAFE_MODE=false
+      - TENANT_DEFAULT=default
+      - WEBHOOK_SECRET=changeme
+    volumes:
+      - ./services/node-red/flows.json:/data/flows.json
+      - ./services/node-red/settings.js:/data/settings.js
+      - node_red_data:/data
+    depends_on:
+      - traefik
+    labels:
+      - traefik.enable=true
+      # Вебхуки БЕЗ авторизации (высший приоритет)
+      - "traefik.http.routers.nodered-webhook.rule=Host(`ncrag.voronkov.club`) && PathPrefix(`/nodered/webhooks`)"
+      - traefik.http.routers.nodered-webhook.entrypoints=websecure
+      - traefik.http.routers.nodered-webhook.priority=1000
+      - traefik.http.routers.nodered-webhook.tls.certresolver=le
+      # Node-RED UI С авторизацией (высокий приоритет)
+      - "traefik.http.routers.nodered-ui.rule=Host(`ncrag.voronkov.club`) && PathPrefix(`/nodered`)"
+      - traefik.http.routers.nodered-ui.entrypoints=websecure
+      - traefik.http.routers.nodered-ui.priority=900
+      - traefik.http.routers.nodered-ui.tls.certresolver=le
+      - traefik.http.routers.nodered-ui.middlewares=nodered-auth
+      # Один сервис для обоих роутеров
+      - traefik.http.services.nodered.loadbalancer.server.port=1880
+      - traefik.docker.network=nc-rag_backend
+    restart: unless-stopped
+    networks:
+      - backend
+
+volumes:
+  nextcloud_data:
+  db_data:
+  traefik_letsencrypt:
+  node_red_data:
+
+networks:
+  web:
+  backend:
