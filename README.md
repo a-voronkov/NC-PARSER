@@ -4,9 +4,9 @@ A Docker Compose setup for running Nextcloud with Node-RED integration behind Tr
 
 ## 🎯 **Current Status: FULLY OPERATIONAL** ✅
 
-- **Nextcloud**: Accessible at https://ncrag.voronkov.club
-- **Node-RED UI**: Accessible at https://ncrag.voronkov.club/nodered (with basic auth)
-- **Webhooks**: Functional at /nodered/webhooks/nextcloud
+- **Nextcloud**: Accessible at https://ncrag.voronkov.club (built-in auth)
+- **Node-RED UI**: Accessible at https://ncrag.voronkov.club/nodered (internal auth: admin/admin)
+- **Webhooks**: Functional at /nodered/webhooks/nextcloud (no auth required)
 - **API**: Operational with token authentication
 
 ## 🚀 **Quick Start**
@@ -50,7 +50,8 @@ A Docker Compose setup for running Nextcloud with Node-RED integration behind Tr
 
 ## 📚 **Documentation**
 
-- **[Solution Guide](SOLUTION_GUIDE.md)**: Complete troubleshooting and configuration guide
+- **[Authentication Guide](AUTHENTICATION_GUIDE.md)**: Complete authentication and routing setup
+- **[Solution Guide](SOLUTION_GUIDE.md)**: Troubleshooting and configuration guide
 - **[Troubleshooting](TROUBLESHOOTING.md)**: Common issues and fixes
 - **[Working Solution](FINAL_WORKING_SOLUTION.md)**: Final configuration details
 
@@ -78,9 +79,10 @@ NEXTCLOUD_APP_PASSWORD=your-api-token
 ## 🔐 **Security**
 
 - **HTTPS Only**: Automatic HTTP → HTTPS redirect
-- **Basic Auth**: Node-RED UI protection
+- **Multi-layer Auth**: Nextcloud built-in + Node-RED internal authentication
 - **API Tokens**: Secure Nextcloud API access
 - **Network Isolation**: Services in separate networks
+- **Webhook Security**: Secret-based validation for Nextcloud events
 
 ## 📊 **Monitoring**
 
