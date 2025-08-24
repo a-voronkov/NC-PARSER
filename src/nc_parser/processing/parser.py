@@ -184,6 +184,72 @@ def _extract_docx_tables_rows(path: Path) -> list[list[list[str]]]:
     return out
 
 
+def _extract_odt_tables_rows_from_xml(xml: str) -> list[list[list[str]]]:
+    rows_all: list[list[list[str]]] = []
+    try:
+        soup = BeautifulSoup(xml, "lxml")
+        # tags often have names like 'table:table', 'table:table-row', 'table:table-cell'
+        for tbl in soup.find_all(lambda tag: isinstance(tag.name, str) and tag.name.endswith("table")):
+            rows: list[list[str]] = []
+            for tr in tbl.find_all(lambda tag: isinstance(tag.name, str) and tag.name.endswith("table-row")):
+                cells = [c.get_text(strip=True) for c in tr.find_all(lambda tag: isinstance(tag.name, str) and tag.name.endswith("table-cell"))]
+                if cells:
+                    rows.append(cells)
+            if rows:
+                rows_all.append(rows)
+    except Exception:
+        pass
+    return rows_all
+
+
+def _extract_delimited_table_rows_from_text(text: str) -> list[list[list[str]]]:
+    rows_all: list[list[list[str]]] = []
+    try:
+        lines = [ln.strip() for ln in text.splitlines()]
+        current: list[list[str]] = []
+        for ln in lines:
+            if (ln.count('|') >= 2) or (ln.count('\t') >= 1):
+                parts = [p.strip() for p in re.split(r"\||\t", ln) if p.strip()]
+                if len(parts) >= 2:
+                    current.append(parts)
+                    continue
+            if current:
+                rows_all.append(current)
+                current = []
+        if current:
+            rows_all.append(current)
+    except Exception:
+        pass
+    return rows_all
+
+
+def _extract_key_fields_formal_doc(text: str) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    try:
+        def grab(pats: list[str]) -> str:
+            for pat in pats:
+                m = re.search(pat, text, re.IGNORECASE)
+                if m:
+                    return (m.group(1) or '').strip()
+            return ''
+
+        fields["work_permit_no"] = grab([r"Work\s*Permit\s*No\.?[:\-]?\s*([A-Za-z0-9\-\/]+)"])
+        fields["visa_grant_number"] = grab([r"Visa\s+grant\s+number\s*[:\-]?\s*([A-Za-z0-9]+)"])
+        fields["name"] = grab([r"Name\s*[:\-]?\s*([A-Z .'-]+)", r"Name\s+([A-Z .'-]+)"])
+        fields["dob"] = grab([r"Date\s*of\s*Birth\s*[:\-]?\s*([0-9]{1,2}\s*[A-Za-z]{3,}\s*[0-9]{2,4}|[0-9]{2}\/[0-9]{2}\/[0-9]{2,4}|[0-9]{1,2}[A-Z]{3}[0-9]{2,4})"])
+        fields["nationality"] = grab([r"Nationality\s*[:\-]?\s*([A-Za-z ]+)"])
+        fields["passport_no"] = grab([r"Passport(?:\/|\s*or\s*Travel\s*Document)?\s*No\.?[:\-]?\s*([A-Za-z0-9]+)"])
+        fields["employer"] = grab([r"Employer\s*[:\-]?\s*([A-Z0-9 ()&.,'-]+)", r"Name of the Employer\s*([A-Z0-9 ()&.,'-]+)"])
+        fields["position"] = grab([r"(TECHNICAL\s+SUPERVISOR.*|Supervisor.*|Engineer.*|Manager.*)"])
+        fields["date_of_issue"] = grab([r"Date\s*of\s*issue\s*[:\-]?\s*([0-9]{1,2}\s*[A-Za-z]{3,}\s*[0-9]{2,4})"])
+        fields["date_of_expiry"] = grab([r"Date\s*of\s*Expiry\s*[:\-]?\s*([0-9]{1,2}\s*[A-Za-z]{3,}\s*[0-9]{2,4})"])
+        # Drop empty
+        fields = {k: v for k, v in fields.items() if v}
+    except Exception:
+        fields = {}
+    return fields
+
+
 def _extract_pdf_tables_html(path: Path) -> list[str]:
     html_tables: list[str] = []
     try:
@@ -698,10 +764,72 @@ def parse_document_to_text(path: Path) -> ParsedDocument:
         return ParsedDocument(full_text=text, pages=pages if pages else [])
     elif suffix == ".doc":
         text = _normalize_output_text(_read_doc_binary_text(path))
+        # Try to extract simple delimited tables from text
+        tables_rows = _extract_delimited_table_rows_from_text(text)
+        tables_html = [_render_html_table(rows) for rows in tables_rows]
+        tables_plain = [_render_plain_table(rows) for rows in tables_rows]
+        pages = [{"index": 0, "text": text}]
+        if tables_plain:
+            pages.append({
+                "index": 1,
+                "text": "\n\n".join(tables_plain),
+                "elements": [{"type": "table_html", "description": html} for html in tables_html],
+            })
+            text = (text + "\n\n" + "\n\n".join(tables_plain)).strip()
+        # Extract known fields
+        fields = _extract_key_fields_formal_doc(text)
+        if fields:
+            pages.append({"index": len(pages), "text": "", "elements": [{"type": "fields", "description": json.dumps(fields, ensure_ascii=False)}]})
+        text = _normalize_output_text(text)
+        for p in pages:
+            p["text"] = _normalize_output_text(p.get("text", ""))
+        return ParsedDocument(full_text=text, pages=pages)
     elif ftype == "rtf" or suffix == ".rtf":
         text = _normalize_output_text(_read_rtf_text(path))
+        tables_rows = _extract_delimited_table_rows_from_text(text)
+        tables_html = [_render_html_table(rows) for rows in tables_rows]
+        tables_plain = [_render_plain_table(rows) for rows in tables_rows]
+        pages = [{"index": 0, "text": text}]
+        if tables_plain:
+            pages.append({
+                "index": 1,
+                "text": "\n\n".join(tables_plain),
+                "elements": [{"type": "table_html", "description": html} for html in tables_html],
+            })
+            text = (text + "\n\n" + "\n\n".join(tables_plain)).strip()
+        fields = _extract_key_fields_formal_doc(text)
+        if fields:
+            pages.append({"index": len(pages), "text": "", "elements": [{"type": "fields", "description": json.dumps(fields, ensure_ascii=False)}]})
+        text = _normalize_output_text(text)
+        for p in pages:
+            p["text"] = _normalize_output_text(p.get("text", ""))
+        return ParsedDocument(full_text=text, pages=pages)
     elif suffix == ".odt":
-        text = _normalize_output_text(_read_odt_text(path))
+        # Extract text and tables from content.xml
+        try:
+            with zipfile.ZipFile(str(path), "r") as zf:
+                xml = zf.open("content.xml").read().decode("utf-8", errors="ignore")
+        except Exception:
+            xml = ""
+        text = _normalize_output_text(BeautifulSoup(xml, "lxml").get_text("\n") if xml else _read_odt_text(path))
+        tables_rows = _extract_odt_tables_rows_from_xml(xml) if xml else []
+        tables_html = [_render_html_table(rows) for rows in tables_rows]
+        tables_plain = [_render_plain_table(rows) for rows in tables_rows]
+        pages = [{"index": 0, "text": text}]
+        if tables_plain:
+            pages.append({
+                "index": 1,
+                "text": "\n\n".join(tables_plain),
+                "elements": [{"type": "table_html", "description": html} for html in tables_html],
+            })
+            text = (text + "\n\n" + "\n\n".join(tables_plain)).strip()
+        fields = _extract_key_fields_formal_doc(text)
+        if fields:
+            pages.append({"index": len(pages), "text": "", "elements": [{"type": "fields", "description": json.dumps(fields, ensure_ascii=False)}]})
+        text = _normalize_output_text(text)
+        for p in pages:
+            p["text"] = _normalize_output_text(p.get("text", ""))
+        return ParsedDocument(full_text=text, pages=pages)
     elif ftype == "csv" or suffix in {".csv"}:
         # Parse CSV to HTML table and plain text
         try:
