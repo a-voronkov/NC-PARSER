@@ -37,6 +37,7 @@ class AppSettings(BaseSettings):
     ocr_pdf_page_limit: int = Field(default=10)  # Limit pages for OCR fallback
     ocr_pdf_max_mb: int = Field(default=50)  # Skip OCR if file bigger than this
     ocr_pdf_max_pages: int = Field(default=300)  # Skip OCR if too many pages
+    ocr_debug_dump: bool = Field(default=False)  # Dump intermediate OCR images
 
     # Build metadata (populated by CI or docker build args)
     build_version: str | None = Field(default=os.getenv("BUILD_VERSION"))

@@ -4,17 +4,30 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from PIL import Image, ImageOps, ImageEnhance
+from PIL import Image, ImageOps, ImageEnhance, ImageFilter
+import numpy as np
+import cv2
 from pdfminer.high_level import extract_text as pdf_extract_text
 from pytesseract import image_to_string as ocr_image_to_string
 from bs4 import BeautifulSoup
 import pdfplumber
 from pdf2image import convert_from_path
 import csv
+import subprocess
+import zipfile
+import re
 from charset_normalizer import from_path as detect_encoding_from_path
 import ftfy
 from pypdf import PdfReader
 from nc_parser.core.settings import get_settings
+from structlog import get_logger
+
+try:
+    from striprtf.striprtf import rtf_to_text  # type: ignore
+except Exception:  # pragma: no cover
+    rtf_to_text = None  # type: ignore
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -41,6 +54,134 @@ def _read_text_file(path: Path) -> str:
 
 def _read_pdf_text(path: Path) -> str:
     return pdf_extract_text(str(path)) or ""
+
+
+def _pdf_quick_sanity(path: Path) -> bool:
+    """Cheap PDF sanity: open metadata and count pages; ensure EOF marker present.
+
+    Returns True if file looks sane; False to fast-fail.
+    """
+    try:
+        # EOF marker near the end
+        with path.open("rb") as f:
+            f.seek(max(0, path.stat().st_size - 2048))
+            tail = f.read()
+            if b"%%EOF" not in tail:
+                return False
+        # Pages accessible
+        reader = PdfReader(str(path))
+        if len(reader.pages) < 1:
+            return False
+        return True
+    except Exception:
+        return False
+
+
+def _read_doc_binary_text(path: Path) -> str:
+    """Read legacy .doc via antiword; fallback to empty on failure."""
+    try:
+        res = subprocess.run(
+            ["antiword", "-w", "0", str(path)],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=30,
+        )
+        out = res.stdout.decode("utf-8", errors="ignore")
+        return ftfy.fix_text(out).strip()
+    except Exception:
+        return ""
+
+
+def _read_rtf_text(path: Path) -> str:
+    try:
+        if rtf_to_text is None:
+            return ""
+        raw = path.read_text(encoding="utf-8", errors="ignore")
+        txt = rtf_to_text(raw)
+        return ftfy.fix_text(txt).strip()
+    except Exception:
+        return ""
+
+
+def _read_odt_text(path: Path) -> str:
+    try:
+        with zipfile.ZipFile(str(path), "r") as zf:
+            with zf.open("content.xml") as f:
+                xml = f.read().decode("utf-8", errors="ignore")
+        # Extract visible text; lxml already available
+        soup = BeautifulSoup(xml, "lxml")
+        txt = soup.get_text("\n")
+        return ftfy.fix_text(txt).strip()
+    except Exception:
+        return ""
+
+
+def _normalize_output_text(text: str) -> str:
+    if not text:
+        return ""
+    t = ftfy.fix_text(text)
+    t = t.replace("\r", "").replace("\xa0", " ")
+    # Normalize unicode minus to hyphen
+    t = t.replace("−", "-")
+    # Collapse excessive spaces but preserve newlines
+    t = re.sub(r"[ \t]+", " ", t)
+    # Trim trailing spaces on lines
+    t = "\n".join(line.rstrip() for line in t.splitlines())
+    # Strip UI/noise lines: short, mostly symbols
+    def _is_noise(line: str) -> bool:
+        if not line:
+            return False
+        # Remove common bullet-like chars for ratio check
+        cleaned = re.sub(r"[A-Za-z0-9]", "", line)
+        symbol_ratio = (len(cleaned) / max(1, len(line)))
+        if len(line) <= 3 and symbol_ratio > 0.5:
+            return True
+        # Lines with almost no letters and lots of punctuation/symbols
+        letters = len(re.findall(r"[A-Za-zА-Яа-я]", line))
+        if letters == 0 and symbol_ratio > 0.6:
+            return True
+        # UI crumbs like isolated icons repeated
+        if re.fullmatch(r"[•·©®™@©\-_=+~^`\|<>\(\)\[\]{}\\]+", line.strip()):
+            return True
+        return False
+    lines = [ln for ln in t.splitlines() if not _is_noise(ln.strip())]
+    t = "\n".join(lines)
+    return t.strip()
+
+
+def _extract_html_tables_rows_from_html(raw_html: str) -> list[list[list[str]]]:
+    rows_all: list[list[list[str]]] = []
+    try:
+        soup = BeautifulSoup(raw_html, "lxml")
+        for tbl in soup.find_all("table"):
+            rows: list[list[str]] = []
+            for tr in tbl.find_all("tr"):
+                cells = [c.get_text(strip=True) for c in tr.find_all(["td", "th"])]
+                if cells:
+                    rows.append(cells)
+            if rows:
+                rows_all.append(rows)
+    except Exception:
+        pass
+    return rows_all
+
+
+def _extract_docx_tables_rows(path: Path) -> list[list[list[str]]]:
+    out: list[list[list[str]]] = []
+    try:
+        import docx  # type: ignore
+        document = docx.Document(str(path))
+        for tbl in document.tables:
+            rows: list[list[str]] = []
+            for row in tbl.rows:
+                cells = [ftfy.fix_text(cell.text or "").strip() for cell in row.cells]
+                rows.append(cells)
+            if rows:
+                out.append(rows)
+    except Exception:
+        pass
+    return out
 
 
 def _extract_pdf_tables_html(path: Path) -> list[str]:
@@ -105,15 +246,13 @@ def _read_pdf_text_hybrid(path: Path) -> str:
                         img = images[0]
                         # Reuse image OCR pipeline by passing through PIL path is not needed
                         # Apply same preprocessing and configs
-                        g = img.convert("L")
-                        # quick autocontrast to help
+                        # dump into file_id folder
                         try:
-                            g = ImageOps.autocontrast(g)
+                            file_id_part = path.parent.name
+                            prefix = f"{file_id_part}/{path.stem}_p{idx}"
                         except Exception:
-                            pass
-                        text = ocr_image_to_string(
-                            g, lang=settings.ocr_langs, config=f"--oem 1 --psm 6"
-                        ).strip()
+                            prefix = f"{path.stem}_p{idx}"
+                        text = _ocr_from_pil_image(img, dump_prefix=prefix)
                         texts.append(text)
                     else:
                         texts.append("")
@@ -142,15 +281,12 @@ def _extract_pdf_images_ocr(path: Path, max_images: int = 10) -> list[str]:
 
                     with Image.open(BytesIO(img.data)) as im:  # type: ignore[attr-defined]
                         # preprocess similar to image pipeline
-                        base = im.convert("RGB")
-                        if max(base.size) < 1200:
-                            base = base.resize((base.width * 2, base.height * 2), Image.LANCZOS)
-                        g = base.convert("L")
                         try:
-                            g = ImageOps.autocontrast(g)
+                            file_id_part = path.parent.name
+                            prefix = f"{file_id_part}/{path.stem}_img{count}"
                         except Exception:
-                            pass
-                        t = ocr_image_to_string(g, lang=get_settings().ocr_langs, config="--oem 1 --psm 6").strip()
+                            prefix = f"{path.stem}_img{count}"
+                        t = _ocr_from_pil_image(im, dump_prefix=prefix)
                         if t:
                             texts.append(t)
                             count += 1
@@ -163,50 +299,191 @@ def _extract_pdf_images_ocr(path: Path, max_images: int = 10) -> list[str]:
     return texts
 
 
+def _cv2_preprocess_for_ocr(pil_img: Image.Image, dump_prefix: str | None = None) -> list[Image.Image]:
+    settings = get_settings()
+    variants: list[Image.Image] = []
+    # Convert PIL -> OpenCV
+    img = np.array(pil_img.convert("RGB"))
+    img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+    # Deskew via moments angle
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    gray = cv2.fastNlMeansDenoising(gray, h=10)
+    # Try to estimate skew and rotate
+    try:
+        edges = cv2.Canny(gray, 50, 150, apertureSize=3)
+        lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=100, minLineLength=100, maxLineGap=10)
+        angles: list[float] = []
+        if lines is not None:
+            for line in lines[:200]:
+                x1, y1, x2, y2 = line[0]
+                angle = np.degrees(np.arctan2(y2 - y1, x2 - x1))
+                # Consider near-horizontal text lines
+                if -45 < angle < 45:
+                    angles.append(angle)
+        if angles:
+            median_angle = float(np.median(angles))
+            if abs(median_angle) > 0.5:
+                (h, w) = gray.shape[:2]
+                M = cv2.getRotationMatrix2D((w // 2, h // 2), median_angle, 1.0)
+                gray = cv2.warpAffine(gray, M, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+    except Exception:
+        pass
+    # Thresholds
+    th_otsu = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+    th_mean = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY, 31, 10)
+    th_gauss = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 10)
+    # Morphology to connect text
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 1))
+    morphed = cv2.morphologyEx(th_otsu, cv2.MORPH_OPEN, kernel)
+    # Collect variants
+    cv_variants = [gray, th_otsu, th_mean, th_gauss, morphed]
+    for idx, arr in enumerate(cv_variants):
+        try:
+            im = Image.fromarray(arr)
+            variants.append(im)
+            if dump_prefix and (settings.ocr_debug_dump or str(settings.log_level).upper() == "DEBUG"):
+                dump_dir = get_settings().data_dir / "artifacts"
+                # Save via proper encoding
+                out_path = dump_dir / f"{dump_prefix}_cv2_{idx}.png"
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                cv2.imwrite(str(out_path), arr)
+                try:
+                    logger.debug("ocr_dump_saved", path=str(out_path))
+                except Exception:
+                    pass
+        except Exception:
+            continue
+    return variants
+
+
+def _save_pil_variant(img: Image.Image, prefix: str, idx: int) -> None:
+    try:
+        settings = get_settings()
+        if not (settings.ocr_debug_dump or str(settings.log_level).upper() == "DEBUG"):
+            return
+        dump_dir = settings.data_dir / "artifacts"
+        dump_dir.mkdir(parents=True, exist_ok=True)
+        out_path = dump_dir / f"{prefix}_pil_{idx}.png"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            logger.debug("ocr_dump_try", path=str(out_path))
+        except Exception:
+            pass
+        try:
+            img.save(out_path)
+            try:
+                logger.debug("ocr_dump_saved", path=str(out_path))
+            except Exception:
+                pass
+        except Exception as e:
+            try:
+                logger.warning("ocr_dump_error", path=str(out_path), error=str(e))
+            except Exception:
+                pass
+    except Exception as e:
+        try:
+            logger.warning("ocr_dump_error_setup", error=str(e))
+        except Exception:
+            pass
+        return
+
+
+def _ocr_from_pil_image(pil_img: Image.Image, dump_prefix: str | None = None) -> str:
+    settings = get_settings()
+    variants: list[Image.Image] = []
+    try:
+        base = pil_img.convert("RGB")
+        # Force dump original
+        try:
+            if dump_prefix and (settings.ocr_debug_dump or str(settings.log_level).upper() == "DEBUG"):
+                dump_dir = settings.data_dir / "artifacts"
+                out_path = dump_dir / f"{dump_prefix}_orig.png"
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    logger.debug("ocr_dump_try", path=str(out_path))
+                except Exception:
+                    pass
+                try:
+                    base.save(out_path)
+                    logger.debug("ocr_dump_saved", path=str(out_path))
+                except Exception as e:
+                    logger.warning("ocr_dump_error", path=str(out_path), error=str(e))
+        except Exception as e:
+            try:
+                logger.warning("ocr_dump_error_setup", error=str(e))
+            except Exception:
+                pass
+        mx = max(base.size)
+        if mx < 800:
+            base = base.resize((base.width * 3, base.height * 3), Image.LANCZOS)
+        elif mx < 1200:
+            base = base.resize((base.width * 2, base.height * 2), Image.LANCZOS)
+        g = base.convert("L")
+        pil_variants = [
+            g,
+            ImageOps.autocontrast(g),
+            ImageEnhance.Contrast(g).enhance(1.8),
+            ImageOps.invert(g),
+            g.filter(ImageFilter.UnsharpMask(radius=2, percent=150)),
+        ]
+        for i, v in enumerate(pil_variants):
+            variants.append(v)
+            if dump_prefix:
+                _save_pil_variant(v, dump_prefix, i)
+        # OpenCV variants
+        variants.extend(_cv2_preprocess_for_ocr(base, dump_prefix=dump_prefix))
+    except Exception:
+        variants = [pil_img]
+    configs = [
+        f"--oem 1 --psm {settings.ocr_tesseract_psm}",
+        "--oem 3 --psm 6",
+        "--oem 3 --psm 4",
+        "--oem 3 --psm 7",
+        "--oem 1 --psm 11",
+        "--oem 1 --psm 12",
+        "--oem 1 --psm 13",
+        "--oem 1 --psm 6 -c tessedit_char_blacklist=~`^*_{}[]|\\",
+        "--oem 1 --psm 6 -c preserve_interword_spaces=1",
+    ]
+    try:
+        logger.info(
+            "ocr_attempt_start",
+            variants=len(variants),
+            dump_enabled=settings.ocr_debug_dump,
+            prefix=dump_prefix,
+            ocr_langs=settings.ocr_langs,
+        )
+    except Exception:
+        pass
+    for im in variants:
+        for cfg in configs:
+            try:
+                text = ocr_image_to_string(im, lang=settings.ocr_langs, config=cfg).strip()
+                if text:
+                    try:
+                        logger.info("ocr_attempt_ok", length=len(text), config=cfg)
+                    except Exception:
+                        pass
+                    return text
+            except Exception:
+                continue
+    try:
+        logger.info("ocr_attempt_empty")
+    except Exception:
+        pass
+    return ""
+
+
 def _read_image_text(path: Path) -> str:
     settings = get_settings()
     with Image.open(path) as img:
-        variants: list[Image.Image] = []
+        # Put dumps under file_id folder if possible
         try:
-            base = img.convert("RGB")
-            # Upscale small images to help Tesseract
-            max_dim = max(base.size)
-            if max_dim < 1200:
-                scale = 2
-                base = base.resize((base.width * scale, base.height * scale), Image.LANCZOS)
-            g = base.convert("L")
-            variants.append(g)
-            # Autocontrast
-            variants.append(ImageOps.autocontrast(g))
-            # Increase contrast
-            variants.append(ImageEnhance.Contrast(g).enhance(1.8))
-            # Binary thresholds
-            for th in (120, 140, 160, 180):
-                try:
-                    variants.append(g.point(lambda x, t=th: 0 if x < t else 255, "1"))
-                except Exception:
-                    continue
+            file_id_part = path.parent.name
+            dump_prefix = f"{file_id_part}/{path.stem}"
         except Exception:
-            variants.append(img)
-        # Try a set of configs across variants
-        configs = [
-            f"--oem 1 --psm {settings.ocr_tesseract_psm}",
-            "--oem 3 --psm 6",
-            "--oem 3 --psm 4",
-            "--oem 3 --psm 7",
-            "--oem 1 --psm 11",
-            "--oem 1 --psm 12",
-            "--oem 1 --psm 13",
-        ]
-        for im in variants:
-            for cfg in configs:
-                try:
-                    text = ocr_image_to_string(im, lang=settings.ocr_langs, config=cfg).strip()
-                    if text:
-                        return text
-                except Exception:
-                    continue
-        return ""
+            dump_prefix = path.stem
+        return _ocr_from_pil_image(img, dump_prefix=dump_prefix)
 
 
 def _pdf_has_text_layer(path: Path) -> bool:
@@ -309,9 +586,43 @@ def _extract_docx_images_ocr(path: Path) -> list[str]:
 
 def parse_document_to_text(path: Path) -> ParsedDocument:
     suffix = path.suffix.lower()
-    if suffix in {".txt", ""}:
+
+    def _detect_type(p: Path) -> str:
+        try:
+            with p.open("rb") as f:
+                head = f.read(4096)
+            h = head[:16]
+            if head.startswith(b"%PDF"):
+                return "pdf"
+            if head.startswith(b"\x89PNG\r\n\x1a\n"):
+                return "png"
+            if head.startswith(b"\xFF\xD8\xFF"):
+                return "jpg"
+            if head[:2] == b"PK":
+                # Could be DOCX/ZIP/ODT; cheap check — rely on suffix next
+                return "zip"
+            if head[:8] == b"{\\rtf1":
+                return "rtf"
+            txt_sample = head.decode("utf-8", errors="ignore").lower()
+            if "<html" in txt_sample or "<!doctype html" in txt_sample:
+                return "html"
+            if "," in txt_sample and "\n" in txt_sample:
+                return "csv"
+            return "txt"
+        except Exception:
+            return "txt"
+
+    ftype = _detect_type(path)
+    try:
+        logger.info("detect_file_type", suffix=suffix, ftype=ftype, path=str(path))
+    except Exception:
+        pass
+
+    if ftype == "txt" or (suffix in {".txt", ""} and ftype is None):
         text = _read_text_file(path)
-    elif suffix == ".pdf":
+    elif ftype == "pdf" or suffix == ".pdf":
+        if not _pdf_quick_sanity(path):
+            return ParsedDocument(full_text="", pages=[])
         if _pdf_has_text_layer(path):
             # Hybrid: try per-page; OCR only empty pages
             text = _read_pdf_text_hybrid(path) or _read_pdf_text_plumber(path) or _read_pdf_text(path)
@@ -350,13 +661,20 @@ def parse_document_to_text(path: Path) -> ParsedDocument:
             pages.append({"index": 1, "text": "\n\n".join(tables_plain), "elements": elements})
             # Concatenate plain tables to full text for searchability
             text = (text + "\n\n" + "\n\n".join(tables_plain)).strip()
+        text = _normalize_output_text(text)
+        for p in pages:
+            p["text"] = _normalize_output_text(p.get("text", ""))
         return ParsedDocument(full_text=text, pages=pages)
-    elif suffix in {".png", ".jpg", ".jpeg", ".bmp", ".tiff"}:
-        text = _read_image_text(path)
-    elif suffix in {".docx"}:
+    elif ftype in {"png", "jpg"} or suffix in {".png", ".jpg", ".jpeg", ".bmp", ".tiff"}:
+        text = _normalize_output_text(_read_image_text(path))
+    elif ftype == "docx" or suffix in {".docx"}:
         text = _read_docx_text(path)
         # OCR for embedded images
         image_texts = _extract_docx_images_ocr(path)
+        # Extract tables
+        docx_tables = _extract_docx_tables_rows(path)
+        tables_html = [_render_html_table(rows) for rows in docx_tables]
+        tables_plain = [_render_plain_table(rows) for rows in docx_tables]
         pages: list[dict[str, Any]] = []
         if text:
             pages.append({"index": 0, "text": text})
@@ -367,8 +685,24 @@ def parse_document_to_text(path: Path) -> ParsedDocument:
                 "elements": [{"type": "image_ocr", "description": t} for t in image_texts],
             })
             text = (text + "\n\n" + "\n\n".join(image_texts)).strip()
+        if tables_plain:
+            pages.append({
+                "index": len(pages),
+                "text": "\n\n".join(tables_plain),
+                "elements": [{"type": "table_html", "description": html} for html in tables_html],
+            })
+            text = (text + "\n\n" + "\n\n".join(tables_plain)).strip()
+        text = _normalize_output_text(text)
+        for p in pages:
+            p["text"] = _normalize_output_text(p.get("text", ""))
         return ParsedDocument(full_text=text, pages=pages if pages else [])
-    elif suffix in {".csv"}:
+    elif suffix == ".doc":
+        text = _normalize_output_text(_read_doc_binary_text(path))
+    elif ftype == "rtf" or suffix == ".rtf":
+        text = _normalize_output_text(_read_rtf_text(path))
+    elif suffix == ".odt":
+        text = _normalize_output_text(_read_odt_text(path))
+    elif ftype == "csv" or suffix in {".csv"}:
         # Parse CSV to HTML table and plain text
         try:
             # Detect encoding
@@ -392,7 +726,7 @@ def parse_document_to_text(path: Path) -> ParsedDocument:
                     for row in reader:
                         rows.append([ftfy.fix_text(col).strip(" \t\ufeff") for col in row])
             html = _render_html_table(rows)
-            plain = ftfy.fix_text(_render_plain_table(rows))
+            plain = _normalize_output_text(_render_plain_table(rows))
             pages = [
                 {"index": 0, "text": plain, "elements": [{"type": "table_html", "description": html}]}
             ]
@@ -403,12 +737,25 @@ def parse_document_to_text(path: Path) -> ParsedDocument:
         # Simple markdown strip: remove fenced code markers and headers
         raw = _read_text_file(path)
         text = raw.replace("```", "\n").replace("#", "").strip()
-    elif suffix in {".html", ".htm"}:
+    elif ftype == "html" or suffix in {".html", ".htm"}:
         raw = _read_text_file(path)
         soup = BeautifulSoup(raw, "lxml")
-        text = soup.get_text("\n")
+        text = _normalize_output_text(soup.get_text("\n"))
+        html_tables_rows = _extract_html_tables_rows_from_html(raw)
+        tables_html = [_render_html_table(rows) for rows in html_tables_rows]
+        tables_plain = [_render_plain_table(rows) for rows in html_tables_rows]
+        pages = [{"index": 0, "text": text}]
+        if tables_plain:
+            pages.append({
+                "index": 1,
+                "text": "\n\n".join(tables_plain),
+                "elements": [{"type": "table_html", "description": html} for html in tables_html],
+            })
+            text = (text + "\n\n" + "\n\n".join(tables_plain)).strip()
+        return ParsedDocument(full_text=text, pages=pages)
     else:
         text = ""
+    text = _normalize_output_text(text)
     pages = [{"index": 0, "text": text}] if text else []
     return ParsedDocument(full_text=text, pages=pages)
 

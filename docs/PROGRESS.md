@@ -30,16 +30,26 @@ Exit criteria: Single-shot+chunked flows pass, status transitions, deletion — 
 - [x] PDF (pdfminer.six) базовый текст
 - [x] DOCX (python-docx)
 - [x] Изображения через Tesseract OCR
-- [ ] Таблицы как HTML + текст (в последующих итерациях)
-- [ ] Метрики времени по шагам (добавить сбор)
+- [ ] Старые/альтернативные форматы документов: DOC (binary), RTF, ODT — поддержка и корректный парсинг
+- [ ] Таблицы: сохранение как HTML + параллельный plain-text (стабилизация и тесты)
+- [ ] «Fast‑fail» для битых/частично повреждённых PDF (ранняя эвристика, быстрый отказ)
+- [ ] Нормализация: CSV/HTML (кавычки/минусы/неразрывные пробелы), фильтрация UI‑шумов/бинарного мусора из Word
+- [ ] Формальные документы: извлечение ключевых полей (номера, даты, должность/роль и пр.)
+- [ ] Метрики времени по шагам (`processing_metrics`), размеры/лимиты на файл/страницы
+- [ ] Здоровье ресурсов: surfaced‑сигналы OOM/ENOSPC в статус/метрики (см. Phase 7 Observability)
 
-Exit criteria: базовый парсинг для текстовых PDF, сканов и изображений — Частично достигнуто (PDF/MD/HTML/IMG/DOCX работают, таблицы/метрики в плане).
+Exit criteria (Phase 2): базовый парсинг для текстовых PDF, сканов и изображений — почти достигнуто. Для перехода дальше требуются как минимум: поддержка DOC/RTF/ODT, стабилизация таблиц, сбор таймингов и нормализация выводов.
 
 ## Phase 3 — Visual Elements Description (Captioning)
 - [x] Каркас captioning (stub) и интеграция по флагу
 - [ ] BLIP-2 backend (GPU) — планируется на GPU-сервере
 - [ ] Heuristics/батчинг/троттлинг
 
+Readiness blockers (to start Phase 3 эффективно):
+- [ ] Из Phase 2: стабильные элементы страниц (таблицы как HTML+plain), нормализованный текст
+- [ ] Готовность окружения с GPU (образы/драйверы, доступ к весам BLIP‑2)
+- [ ] Базовые метрики/тайминги для оценки накладных расходов captioning
+
 ## Notes
 - Local profile is CPU-only; OCR/Captioning/Donut/LLM toggles are off by default.
-- Next: verify chunked flow with fixtures; implement TTL stub; improve status transitions (queued/processing/done).
+- Next: закрыть хвосты Phase 2 (DOC/RTF/ODT, таблицы, тайминги/нормализация), затем включить GPU‑backend для BLIP‑2 и перейти к Phase 3.

@@ -118,12 +118,25 @@ def save_single_shot(file_bytes: bytes, filename: Optional[str]) -> UUID:
 
 def get_uploaded_file_path(file_id: UUID) -> Path:
     uploads_dir = _base_paths(file_id)["uploads"]
-    # Prefer original filename if exists
-    candidates = list(uploads_dir.glob("*.*")) + list(uploads_dir.glob("file.bin"))
-    for c in candidates:
-        if c.name != "meta.json" and c.is_file() and c.name != "chunks":
-            return c
-    raise FileNotFoundError("Uploaded file not found")
+    # Prefer original filename from meta if exists
+    try:
+        meta = UploadMeta.from_file(_meta_path(file_id))
+        if meta.filename:
+            preferred = uploads_dir / meta.filename
+            if preferred.exists() and preferred.is_file():
+                return preferred
+    except Exception:
+        pass
+    # Else pick the most likely content file: exclude control files and pick largest
+    excluded_names = {"meta.json", "status.json"}
+    files = [
+        p for p in uploads_dir.iterdir()
+        if p.is_file() and p.name not in excluded_names and not p.name.endswith(".part")
+    ]
+    if not files:
+        raise FileNotFoundError("Uploaded file not found")
+    files.sort(key=lambda p: p.stat().st_size if p.exists() else 0, reverse=True)
+    return files[0]
 
 
 def sha256_file(path: Path) -> str:

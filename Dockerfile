@@ -18,7 +18,9 @@ RUN apt-get update && \
       libglib2.0-0 \
       libsm6 libxrender1 libxext6 \
       ghostscript \
-      fonts-dejavu && \
+      fonts-dejavu \
+      antiword \
+      unrtf && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

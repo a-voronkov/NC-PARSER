@@ -37,6 +37,8 @@ services:
       - NC_REDIS_URL=redis://redis:6379/0
       - NC_DATA_DIR=/data
       - NC_LOG_LEVEL=INFO
+      - NC_OCR_DEBUG_DUMP=0
+      - NC_OCR_LANGS=eng
     volumes:
       - ./data:/data
     ports:
@@ -54,6 +56,7 @@ services:
       - NC_DATA_DIR=/data
       - NC_LOG_LEVEL=INFO
       - NC_RETENTION_TTL_HOURS=168
+      - NC_OCR_LANGS=eng
     volumes:
       - ./data:/data
     depends_on:

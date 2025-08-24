@@ -38,6 +38,12 @@ dependencies = [
   "ftfy>=6.2"
   ,
   "pypdf>=4.2"
+  ,
+  "opencv-python-headless>=4.9"
+  ,
+  "striprtf>=0.0.26"
+  ,
+  "odfpy>=1.4.1"
 ]
 
 [project.optional-dependencies]

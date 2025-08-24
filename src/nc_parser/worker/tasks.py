@@ -12,6 +12,11 @@ from pathlib import Path
 import time
 from nc_parser.core.worker_metrics import observe_task
 from nc_parser.processing.captioning import caption_image_stub
+from pathlib import Path
+from structlog import get_logger
+
+
+logger = get_logger(__name__)
 
 
 @celery_app.task(name="nc_parser.process_file")
@@ -21,7 +26,40 @@ def process_file(file_id: str) -> dict[str, Any]:
     # Update status: processing start
     write_status(UUID(file_id), status="processing", progress=0.1)
     input_path = get_uploaded_file_path(UUID(file_id))
+    # Extra debug: log input path and list of files in uploads/<file_id>
+    try:
+        settings = get_settings()
+        uploads_dir = settings.data_dir / "uploads" / file_id
+        if uploads_dir.exists():
+            files_list = [p.name for p in uploads_dir.iterdir() if p.is_file()]
+        else:
+            files_list = []
+        # Debug-level to reduce noise in normal runs
+        logger.debug("worker_input_path", file_id=file_id, input=str(input_path), uploads=str(uploads_dir), files=files_list)
+    except Exception:
+        pass
+    # Debug: ensure artifacts dir is writable and visible
+    try:
+        settings = get_settings()
+        if settings.ocr_debug_dump:
+            art_dir = settings.data_dir / "artifacts" / file_id
+            art_dir.mkdir(parents=True, exist_ok=True)
+            # Write a small probe and copy original only when debug dump is enabled
+            try:
+                (art_dir / "probe.txt").write_text("ok", encoding="utf-8")
+            except Exception:
+                pass
+            try:
+                dest = art_dir / input_path.name
+                dest.write_bytes(Path(input_path).read_bytes())
+                logger.debug("worker_artifacts_copied", file_id=file_id, dest=str(dest))
+            except Exception:
+                pass
+    except Exception:
+        pass
+    t0 = time.time()
     parsed = parse_document_to_text(input_path)
+    t_parse = int((time.time() - t0) * 1000)
     # Optional captioning (stub): if enabled and input is image
     if get_settings().captioning_enabled and input_path.suffix.lower() in {".png", ".jpg", ".jpeg", ".bmp", ".tiff"}:
         cap = caption_image_stub(input_path)
@@ -32,10 +70,10 @@ def process_file(file_id: str) -> dict[str, Any]:
         "full_text": parsed.full_text,
         "pages": parsed.pages,
         "chunks": [],
-        "processing_metrics": {"timings_ms": {"parse": 500}},
+        "processing_metrics": {"timings_ms": {"parse": t_parse}},
     }
     write_result(UUID(file_id), result)
-    write_status(UUID(file_id), status="done", progress=1.0, timings_ms={"parse": 500})
+    write_status(UUID(file_id), status="done", progress=1.0, timings_ms={"parse": float(t_parse)})
     return result
 
 
