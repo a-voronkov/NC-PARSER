@@ -16,6 +16,8 @@ import csv
 import subprocess
 import zipfile
 import re
+import json
+import time
 from charset_normalizer import from_path as detect_encoding_from_path
 import ftfy
 from pypdf import PdfReader
@@ -34,6 +36,7 @@ logger = get_logger(__name__)
 class ParsedDocument:
     full_text: str
     pages: list[dict[str, Any]]
+    timings_ms: dict[str, float] | None = None
 
 
 def _read_text_file(path: Path) -> str:
@@ -104,6 +107,28 @@ def _read_rtf_text(path: Path) -> str:
         return ""
 
 
+def _rtf_to_html(path: Path) -> str:
+    """Convert RTF to HTML using unrtf; return empty string on failure.
+
+    We use this to reconstruct tables with colspan/rowspan for better fidelity.
+    """
+    try:
+        res = subprocess.run(
+            ["unrtf", "--html", "--nopict", str(path)],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=30,
+        )
+        out = res.stdout.decode("utf-8", errors="ignore")
+        # unrtf wraps HTML in extra info; try to extract BODY
+        soup = BeautifulSoup(out, "lxml")
+        body = soup.find("body")
+        return str(body) if body else out
+    except Exception:
+        return ""
+
+
 def _read_odt_text(path: Path) -> str:
     try:
         with zipfile.ZipFile(str(path), "r") as zf:
@@ -117,7 +142,7 @@ def _read_odt_text(path: Path) -> str:
         return ""
 
 
-def _normalize_output_text(text: str) -> str:
+def _normalize_output_text(text: str, *, drop_noise: bool = True) -> str:
     if not text:
         return ""
     t = ftfy.fix_text(text)
@@ -128,29 +153,58 @@ def _normalize_output_text(text: str) -> str:
     t = re.sub(r"[ \t]+", " ", t)
     # Trim trailing spaces on lines
     t = "\n".join(line.rstrip() for line in t.splitlines())
-    # Strip UI/noise lines: short, mostly symbols
-    def _is_noise(line: str) -> bool:
-        if not line:
+    if drop_noise:
+        # Strip UI/noise lines: short, mostly symbols
+        def _is_noise(line: str) -> bool:
+            if not line:
+                return False
+            # Remove common bullet-like chars for ratio check
+            cleaned = re.sub(r"[A-Za-z0-9]", "", line)
+            symbol_ratio = (len(cleaned) / max(1, len(line)))
+            if len(line) <= 2 and symbol_ratio > 0.7:
+                return True
+            # Lines with almost no letters and lots of punctuation/symbols
+            letters = len(re.findall(r"[A-Za-zА-Яа-я]", line))
+            if letters == 0 and symbol_ratio > 0.7:
+                return True
+            # UI crumbs like isolated icons repeated
+            if re.fullmatch(r"[•·©®™@©\-_=+~^`\|<>\(\)\[\]{}\\]+", line.strip()):
+                return True
             return False
-        # Remove common bullet-like chars for ratio check
-        cleaned = re.sub(r"[A-Za-z0-9]", "", line)
-        symbol_ratio = (len(cleaned) / max(1, len(line)))
-        if len(line) <= 3 and symbol_ratio > 0.5:
-            return True
-        # Lines with almost no letters and lots of punctuation/symbols
-        letters = len(re.findall(r"[A-Za-zА-Яа-я]", line))
-        if letters == 0 and symbol_ratio > 0.6:
-            return True
-        # UI crumbs like isolated icons repeated
-        if re.fullmatch(r"[•·©®™@©\-_=+~^`\|<>\(\)\[\]{}\\]+", line.strip()):
-            return True
-        return False
-    lines = [ln for ln in t.splitlines() if not _is_noise(ln.strip())]
-    t = "\n".join(lines)
+        lines = [ln for ln in t.splitlines() if not _is_noise(ln.strip())]
+        t = "\n".join(lines)
     return t.strip()
 
 
+def _extract_text_from_html(raw_html: str) -> str:
+    try:
+        soup = BeautifulSoup(raw_html, "lxml")
+        for tag in soup(["script", "style", "noscript", "head", "title", "meta", "link", "svg"]):
+            tag.decompose()
+        for tag in soup(["nav", "header", "footer", "aside"]):
+            tag.decompose()
+        text = soup.get_text("\n")
+        text = _normalize_output_text(text)
+        # Deduplicate short lines repeated many times (menus, footers)
+        lines = []
+        seen: dict[str, int] = {}
+        for ln in text.splitlines():
+            key = ln.strip()
+            if not key:
+                lines.append(ln)
+                continue
+            count = seen.get(key, 0)
+            if len(key) <= 64 and count >= 1:
+                continue
+            seen[key] = count + 1
+            lines.append(ln)
+        return "\n".join(lines).strip()
+    except Exception:
+        return _normalize_output_text(BeautifulSoup(raw_html, "lxml").get_text("\n"))
+
+
 def _extract_html_tables_rows_from_html(raw_html: str) -> list[list[list[str]]]:
+    # Legacy: keep simple extractor for backward compatibility
     rows_all: list[list[list[str]]] = []
     try:
         soup = BeautifulSoup(raw_html, "lxml")
@@ -165,6 +219,138 @@ def _extract_html_tables_rows_from_html(raw_html: str) -> list[list[list[str]]]:
     except Exception:
         pass
     return rows_all
+
+
+def _cells_rows_to_html(cells_rows: list[list[dict[str, Any]]], header_rows: int = 1, with_border: bool = True) -> str:
+    """Build HTML table from cell dicts preserving colspan/rowspan and headers.
+
+    Each cell dict: {"text": str, "colspan": int, "rowspan": int, "header": bool}
+    """
+    def tag_for(cell: dict[str, Any]) -> str:
+        return "th" if (cell.get("header") or False) else "td"
+
+    attrs_table = " border=\"1\"" if with_border else ""
+    thead_html = ""
+    tbody_html = ""
+    rows_iter = enumerate(cells_rows)
+    for idx, row in rows_iter:
+        cells_html: list[str] = []
+        for cell in row:
+            name = tag_for(cell)
+            colspan = int(cell.get("colspan", 1) or 1)
+            rowspan = int(cell.get("rowspan", 1) or 1)
+            parts = [name]
+            if colspan > 1:
+                parts.append(f"colspan=\"{colspan}\"")
+            if rowspan > 1:
+                parts.append(f"rowspan=\"{rowspan}\"")
+            attrs = " " + " ".join(parts[1:]) if len(parts) > 1 else ""
+            text = (cell.get("text") or "").strip()
+            cells_html.append(f"<{name}{attrs}>{text}</{name}>")
+        row_html = "<tr>" + "".join(cells_html) + "</tr>"
+        if idx < max(0, header_rows):
+            thead_html += row_html
+        else:
+            tbody_html += row_html
+    if thead_html:
+        return f"<table{attrs_table}><thead>{thead_html}</thead><tbody>{tbody_html}</tbody></table>"
+    return f"<table{attrs_table}>{tbody_html}</table>"
+
+
+def _cells_rows_to_plain_grid(cells_rows: list[list[dict[str, Any]]]) -> list[list[str]]:
+    """Expand cells with rowspan/colspan into rectangular grid of strings.
+
+    The text is placed in the top-left cell; spanned cells become empty strings.
+    """
+    grid: list[list[str]] = []
+    carries: list[int] = []  # rows remaining for rowspan in each column
+
+    def ensure_len(arr: list[int], n: int) -> None:
+        if len(arr) < n:
+            arr.extend([0] * (n - len(arr)))
+
+    for row in cells_rows:
+        row_vals: list[str] = []
+        # Pre-fill carried columns with blanks as we advance through columns when placing cells
+        # Place each new cell at next free column (carry == 0)
+        for cell in row:
+            # advance to next free column
+            c = len(row_vals)
+            while c < len(carries) and carries[c] > 0:
+                row_vals.append("")
+                c += 1
+            # place this cell
+            text = (cell.get("text") or "").strip()
+            colspan = max(1, int(cell.get("colspan", 1) or 1))
+            rowspan = max(1, int(cell.get("rowspan", 1) or 1))
+            row_vals.append(text)
+            for _ in range(colspan - 1):
+                row_vals.append("")
+            ensure_len(carries, len(row_vals))
+            # mark carries for this span (downward rows)
+            if rowspan > 1:
+                for pos in range(c, min(c + colspan, len(carries))):
+                    carries[pos] += (rowspan - 1)
+        # After placing all cells, pad with blanks for any trailing carries
+        # Consume remaining carries positions at the end of the row
+        i = len(row_vals)
+        while i < len(carries) and carries[i] > 0:
+            row_vals.append("")
+            i += 1
+        # Decrement carries for next row
+        carries = [max(0, v - 1) for v in carries]
+        grid.append(row_vals)
+    # Normalize width
+    width = max((len(r) for r in grid), default=0)
+    for r in grid:
+        if len(r) < width:
+            r.extend([""] * (width - len(r)))
+    return grid
+
+
+def _parse_tables_from_html(raw_html: str) -> list[dict[str, Any]]:
+    """Parse HTML and return list of dicts: {html: str, rows_plain: list[list[str]]}.
+
+    Preserves colspan/rowspan and detects header rows using <th> or first row.
+    """
+    out: list[dict[str, Any]] = []
+    try:
+        soup = BeautifulSoup(raw_html, "lxml")
+        for tbl in soup.find_all("table"):
+            cells_rows: list[list[dict[str, Any]]] = []
+            header_rows = 0
+            for tr in tbl.find_all("tr"):
+                row_cells: list[dict[str, Any]] = []
+                is_header_row = False
+                for c in tr.find_all(["th", "td"]):
+                    name = c.name.lower()
+                    is_header = name == "th"
+                    if is_header:
+                        is_header_row = True
+                    txt = c.get_text(strip=True)
+                    colspan = int(c.get("colspan") or 1)
+                    rowspan = int(c.get("rowspan") or 1)
+                    row_cells.append({
+                        "text": ftfy.fix_text(txt).strip(),
+                        "colspan": colspan,
+                        "rowspan": rowspan,
+                        "header": is_header,
+                    })
+                if row_cells:
+                    if is_header_row and header_rows == 0:
+                        header_rows = 1
+                    cells_rows.append(row_cells)
+            if not cells_rows:
+                continue
+            html = _cells_rows_to_html(cells_rows, header_rows=header_rows or 1, with_border=True)
+            grid = _cells_rows_to_plain_grid(cells_rows)
+            out.append({
+                "html": html,
+                "rows_plain": grid,
+            })
+    except Exception:
+        pass
+    return out
 
 
 def _extract_docx_tables_rows(path: Path) -> list[list[list[str]]]:
@@ -184,22 +370,36 @@ def _extract_docx_tables_rows(path: Path) -> list[list[list[str]]]:
     return out
 
 
-def _extract_odt_tables_rows_from_xml(xml: str) -> list[list[list[str]]]:
-    rows_all: list[list[list[str]]] = []
+def _extract_odt_tables_cells_from_xml(xml: str) -> list[list[list[dict[str, Any]]]]:
+    """Return per-table cells with spans preserved for ODT content.xml.
+
+    table:table-cell may have table:number-columns-spanned / table:number-rows-spanned.
+    """
+    tables: list[list[list[dict[str, Any]]]] = []
     try:
         soup = BeautifulSoup(xml, "lxml")
-        # tags often have names like 'table:table', 'table:table-row', 'table:table-cell'
         for tbl in soup.find_all(lambda tag: isinstance(tag.name, str) and tag.name.endswith("table")):
-            rows: list[list[str]] = []
+            table_rows: list[list[dict[str, Any]]] = []
             for tr in tbl.find_all(lambda tag: isinstance(tag.name, str) and tag.name.endswith("table-row")):
-                cells = [c.get_text(strip=True) for c in tr.find_all(lambda tag: isinstance(tag.name, str) and tag.name.endswith("table-cell"))]
-                if cells:
-                    rows.append(cells)
-            if rows:
-                rows_all.append(rows)
+                row_cells: list[dict[str, Any]] = []
+                cells = tr.find_all(lambda tag: isinstance(tag.name, str) and tag.name.endswith("table-cell"))
+                for c in cells:
+                    txt = c.get_text(strip=True)
+                    colspan = int(c.get("table:number-columns-spanned") or 1)
+                    rowspan = int(c.get("table:number-rows-spanned") or 1)
+                    row_cells.append({
+                        "text": ftfy.fix_text(txt).strip(),
+                        "colspan": colspan,
+                        "rowspan": rowspan,
+                        "header": False,
+                    })
+                if row_cells:
+                    table_rows.append(row_cells)
+            if table_rows:
+                tables.append(table_rows)
     except Exception:
         pass
-    return rows_all
+    return tables
 
 
 def _extract_delimited_table_rows_from_text(text: str) -> list[list[list[str]]]:
@@ -217,6 +417,40 @@ def _extract_delimited_table_rows_from_text(text: str) -> list[list[list[str]]]:
                 rows_all.append(current)
                 current = []
         if current:
+            rows_all.append(current)
+    except Exception:
+        pass
+    return rows_all
+
+
+def _extract_whitespace_table_rows(text: str) -> list[list[list[str]]]:
+    """Heuristic: detect fixed-width tables separated by 2+ spaces.
+
+    Collect contiguous blocks with >=2 columns on consecutive lines.
+    Skip border-only lines.
+    """
+    rows_all: list[list[list[str]]] = []
+    try:
+        lines = [ln.rstrip() for ln in text.splitlines()]
+        current: list[list[str]] = []
+        for ln in lines:
+            # Skip border-like lines
+            if re.fullmatch(r"[ \-\+=\|_\.]{5,}", ln.strip()):
+                if current:
+                    if len(current) >= 2:
+                        rows_all.append(current)
+                    current = []
+                continue
+            # Split by 2+ spaces
+            parts = [p.strip() for p in re.split(r"\s{2,}", ln) if p.strip()]
+            if len(parts) >= 2:
+                current.append(parts)
+            else:
+                if current:
+                    if len(current) >= 2:
+                        rows_all.append(current)
+                    current = []
+        if current and len(current) >= 2:
             rows_all.append(current)
     except Exception:
         pass
@@ -684,17 +918,30 @@ def parse_document_to_text(path: Path) -> ParsedDocument:
     except Exception:
         pass
 
+    timings: dict[str, float] = {}
+    t_step = time.perf_counter()
     if ftype == "txt" or (suffix in {".txt", ""} and ftype is None):
         text = _read_text_file(path)
+        timings["txt_read_ms"] = (time.perf_counter() - t_step) * 1000
     elif ftype == "pdf" or suffix == ".pdf":
+        t_pdf = time.perf_counter()
         if not _pdf_quick_sanity(path):
+            timings["pdf_sanity_ms"] = (time.perf_counter() - t_pdf) * 1000
             return ParsedDocument(full_text="", pages=[])
-        if _pdf_has_text_layer(path):
+        timings["pdf_sanity_ms"] = (time.perf_counter() - t_pdf) * 1000
+        t_layer = time.perf_counter()
+        has_text_layer = _pdf_has_text_layer(path)
+        timings["pdf_text_layer_check_ms"] = (time.perf_counter() - t_layer) * 1000
+        if has_text_layer:
             # Hybrid: try per-page; OCR only empty pages
+            t_txt = time.perf_counter()
             text = _read_pdf_text_hybrid(path) or _read_pdf_text_plumber(path) or _read_pdf_text(path)
+            timings["pdf_text_extract_ms"] = (time.perf_counter() - t_txt) * 1000
             if not text:
                 # Fallback to OCR for tricky text-layer PDFs
+                t_ocr = time.perf_counter()
                 text = _ocr_pdf_pages_to_text(path)
+                timings["pdf_ocr_pages_ms"] = (time.perf_counter() - t_ocr) * 1000
         else:
             # Guard rails for OCR on big docs
             settings = get_settings()
@@ -707,11 +954,17 @@ def parse_document_to_text(path: Path) -> ParsedDocument:
             if size_mb > settings.ocr_pdf_max_mb or (settings.ocr_pdf_max_pages and num_pages > settings.ocr_pdf_max_pages):
                 text = ""  # skip OCR
             else:
+                t_ocr = time.perf_counter()
                 text = _ocr_pdf_pages_to_text(path)
+                timings["pdf_ocr_pages_ms"] = (time.perf_counter() - t_ocr) * 1000
+        t_tbl = time.perf_counter()
         tables = _extract_pdf_tables_rows(path)
+        timings["pdf_tables_ms"] = (time.perf_counter() - t_tbl) * 1000
         pages: list[dict[str, Any]] = [{"index": 0, "text": text}]
         # OCR embedded images if text is still weak
+        t_img = time.perf_counter()
         image_texts = _extract_pdf_images_ocr(path)
+        timings["pdf_image_ocr_ms"] = (time.perf_counter() - t_img) * 1000
         if image_texts:
             pages.append({
                 "index": len(pages),
@@ -727,18 +980,34 @@ def parse_document_to_text(path: Path) -> ParsedDocument:
             pages.append({"index": 1, "text": "\n\n".join(tables_plain), "elements": elements})
             # Concatenate plain tables to full text for searchability
             text = (text + "\n\n" + "\n\n".join(tables_plain)).strip()
+        # Extract key fields
+        t_fields = time.perf_counter()
+        fields = _extract_key_fields_formal_doc(text)
+        if fields:
+            pages.append({"index": len(pages), "text": "", "elements": [{"type": "fields", "description": json.dumps(fields, ensure_ascii=False)}]})
+        timings["fields_extract_ms"] = timings.get("fields_extract_ms", 0.0) + (time.perf_counter() - t_fields) * 1000
+        t_norm = time.perf_counter()
         text = _normalize_output_text(text)
         for p in pages:
             p["text"] = _normalize_output_text(p.get("text", ""))
-        return ParsedDocument(full_text=text, pages=pages)
+        timings["normalize_ms"] = (time.perf_counter() - t_norm) * 1000
+        return ParsedDocument(full_text=text, pages=pages, timings_ms=timings)
     elif ftype in {"png", "jpg"} or suffix in {".png", ".jpg", ".jpeg", ".bmp", ".tiff"}:
+        t_img = time.perf_counter()
         text = _normalize_output_text(_read_image_text(path))
+        timings["image_ocr_ms"] = (time.perf_counter() - t_img) * 1000
     elif ftype == "docx" or suffix in {".docx"}:
+        t_docx = time.perf_counter()
         text = _read_docx_text(path)
+        timings["docx_text_ms"] = (time.perf_counter() - t_docx) * 1000
         # OCR for embedded images
+        t_img = time.perf_counter()
         image_texts = _extract_docx_images_ocr(path)
+        timings["docx_images_ocr_ms"] = (time.perf_counter() - t_img) * 1000
         # Extract tables
+        t_tbl = time.perf_counter()
         docx_tables = _extract_docx_tables_rows(path)
+        timings["docx_tables_ms"] = (time.perf_counter() - t_tbl) * 1000
         tables_html = [_render_html_table(rows) for rows in docx_tables]
         tables_plain = [_render_plain_table(rows) for rows in docx_tables]
         pages: list[dict[str, Any]] = []
@@ -758,14 +1027,28 @@ def parse_document_to_text(path: Path) -> ParsedDocument:
                 "elements": [{"type": "table_html", "description": html} for html in tables_html],
             })
             text = (text + "\n\n" + "\n\n".join(tables_plain)).strip()
+        # Extract key fields
+        t_fields = time.perf_counter()
+        fields = _extract_key_fields_formal_doc(text)
+        if fields:
+            pages.append({"index": len(pages), "text": "", "elements": [{"type": "fields", "description": json.dumps(fields, ensure_ascii=False)}]})
+        timings["fields_extract_ms"] = timings.get("fields_extract_ms", 0.0) + (time.perf_counter() - t_fields) * 1000
+        t_norm = time.perf_counter()
         text = _normalize_output_text(text)
         for p in pages:
             p["text"] = _normalize_output_text(p.get("text", ""))
-        return ParsedDocument(full_text=text, pages=pages if pages else [])
+        timings["normalize_ms"] = (time.perf_counter() - t_norm) * 1000
+        return ParsedDocument(full_text=text, pages=pages if pages else [], timings_ms=timings)
     elif suffix == ".doc":
+        t_doc = time.perf_counter()
         text = _normalize_output_text(_read_doc_binary_text(path))
+        timings["doc_text_ms"] = (time.perf_counter() - t_doc) * 1000
         # Try to extract simple delimited tables from text
+        t_tbl = time.perf_counter()
         tables_rows = _extract_delimited_table_rows_from_text(text)
+        # Also try whitespace-separated columns
+        tables_rows += _extract_whitespace_table_rows(text)
+        timings["doc_tables_ms"] = (time.perf_counter() - t_tbl) * 1000
         tables_html = [_render_html_table(rows) for rows in tables_rows]
         tables_plain = [_render_plain_table(rows) for rows in tables_rows]
         pages = [{"index": 0, "text": text}]
@@ -777,18 +1060,40 @@ def parse_document_to_text(path: Path) -> ParsedDocument:
             })
             text = (text + "\n\n" + "\n\n".join(tables_plain)).strip()
         # Extract known fields
+        t_fields = time.perf_counter()
         fields = _extract_key_fields_formal_doc(text)
         if fields:
             pages.append({"index": len(pages), "text": "", "elements": [{"type": "fields", "description": json.dumps(fields, ensure_ascii=False)}]})
+        timings["fields_extract_ms"] = timings.get("fields_extract_ms", 0.0) + (time.perf_counter() - t_fields) * 1000
+        t_norm = time.perf_counter()
         text = _normalize_output_text(text)
         for p in pages:
             p["text"] = _normalize_output_text(p.get("text", ""))
-        return ParsedDocument(full_text=text, pages=pages)
+        timings["normalize_ms"] = (time.perf_counter() - t_norm) * 1000
+        return ParsedDocument(full_text=text, pages=pages, timings_ms=timings)
     elif ftype == "rtf" or suffix == ".rtf":
+        t_rtf = time.perf_counter()
         text = _normalize_output_text(_read_rtf_text(path))
-        tables_rows = _extract_delimited_table_rows_from_text(text)
-        tables_html = [_render_html_table(rows) for rows in tables_rows]
-        tables_plain = [_render_plain_table(rows) for rows in tables_rows]
+        timings["rtf_text_ms"] = (time.perf_counter() - t_rtf) * 1000
+        # Prefer HTML-rendered tables from unrtf to preserve spans/headers
+        t_tbl = time.perf_counter()
+        rtf_html = _rtf_to_html(path)
+        tables_html_blocks: list[str] = []
+        tables_plain_rows: list[list[list[str]]] = []
+        if rtf_html:
+            parsed = _parse_tables_from_html(rtf_html)
+            for item in parsed:
+                tables_html_blocks.append(item["html"])  # type: ignore[index]
+                tables_plain_rows.append(item["rows_plain"])  # type: ignore[index]
+        # Fallback heuristics if no HTML tables detected
+        if not tables_plain_rows:
+            heur_rows = _extract_delimited_table_rows_from_text(text)
+            heur_rows += _extract_whitespace_table_rows(text)
+            tables_plain_rows = heur_rows
+            tables_html_blocks = [_render_html_table(rows) for rows in heur_rows]
+        timings["rtf_tables_ms"] = (time.perf_counter() - t_tbl) * 1000
+        tables_html = tables_html_blocks
+        tables_plain = [_render_plain_table(rows) for rows in tables_plain_rows]
         pages = [{"index": 0, "text": text}]
         if tables_plain:
             pages.append({
@@ -797,24 +1102,42 @@ def parse_document_to_text(path: Path) -> ParsedDocument:
                 "elements": [{"type": "table_html", "description": html} for html in tables_html],
             })
             text = (text + "\n\n" + "\n\n".join(tables_plain)).strip()
+        t_fields = time.perf_counter()
         fields = _extract_key_fields_formal_doc(text)
         if fields:
             pages.append({"index": len(pages), "text": "", "elements": [{"type": "fields", "description": json.dumps(fields, ensure_ascii=False)}]})
+        timings["fields_extract_ms"] = timings.get("fields_extract_ms", 0.0) + (time.perf_counter() - t_fields) * 1000
+        t_norm = time.perf_counter()
         text = _normalize_output_text(text)
         for p in pages:
             p["text"] = _normalize_output_text(p.get("text", ""))
-        return ParsedDocument(full_text=text, pages=pages)
+        timings["normalize_ms"] = (time.perf_counter() - t_norm) * 1000
+        return ParsedDocument(full_text=text, pages=pages, timings_ms=timings)
     elif suffix == ".odt":
         # Extract text and tables from content.xml
+        t_odt = time.perf_counter()
         try:
             with zipfile.ZipFile(str(path), "r") as zf:
                 xml = zf.open("content.xml").read().decode("utf-8", errors="ignore")
         except Exception:
             xml = ""
         text = _normalize_output_text(BeautifulSoup(xml, "lxml").get_text("\n") if xml else _read_odt_text(path))
-        tables_rows = _extract_odt_tables_rows_from_xml(xml) if xml else []
-        tables_html = [_render_html_table(rows) for rows in tables_rows]
-        tables_plain = [_render_plain_table(rows) for rows in tables_rows]
+        timings["odt_text_ms"] = (time.perf_counter() - t_odt) * 1000
+        t_tbl = time.perf_counter()
+        cells_tables = _extract_odt_tables_cells_from_xml(xml) if xml else []
+        tables_html: list[str] = []
+        tables_plain: list[str] = []
+        if cells_tables:
+            for cells_rows in cells_tables:
+                html = _cells_rows_to_html(cells_rows, header_rows=1, with_border=True)
+                grid = _cells_rows_to_plain_grid(cells_rows)
+                tables_html.append(html)
+                tables_plain.append(_render_plain_table(grid))
+        if not tables_plain:
+            heur_rows = _extract_whitespace_table_rows(text)
+            tables_html = [_render_html_table(rows) for rows in heur_rows]
+            tables_plain = [_render_plain_table(rows) for rows in heur_rows]
+        timings["odt_tables_ms"] = (time.perf_counter() - t_tbl) * 1000
         pages = [{"index": 0, "text": text}]
         if tables_plain:
             pages.append({
@@ -823,13 +1146,17 @@ def parse_document_to_text(path: Path) -> ParsedDocument:
                 "elements": [{"type": "table_html", "description": html} for html in tables_html],
             })
             text = (text + "\n\n" + "\n\n".join(tables_plain)).strip()
+        t_fields = time.perf_counter()
         fields = _extract_key_fields_formal_doc(text)
         if fields:
             pages.append({"index": len(pages), "text": "", "elements": [{"type": "fields", "description": json.dumps(fields, ensure_ascii=False)}]})
+        timings["fields_extract_ms"] = timings.get("fields_extract_ms", 0.0) + (time.perf_counter() - t_fields) * 1000
+        t_norm = time.perf_counter()
         text = _normalize_output_text(text)
         for p in pages:
             p["text"] = _normalize_output_text(p.get("text", ""))
-        return ParsedDocument(full_text=text, pages=pages)
+        timings["normalize_ms"] = (time.perf_counter() - t_norm) * 1000
+        return ParsedDocument(full_text=text, pages=pages, timings_ms=timings)
     elif ftype == "csv" or suffix in {".csv"}:
         # Parse CSV to HTML table and plain text
         try:
@@ -858,18 +1185,24 @@ def parse_document_to_text(path: Path) -> ParsedDocument:
             pages = [
                 {"index": 0, "text": plain, "elements": [{"type": "table_html", "description": html}]}
             ]
-            return ParsedDocument(full_text=plain, pages=pages)
+            timings["csv_parse_ms"] = (time.perf_counter() - t_step) * 1000
+            return ParsedDocument(full_text=plain, pages=pages, timings_ms=timings)
         except Exception:
             text = ""
     elif suffix in {".md", ".markdown"}:
         # Simple markdown strip: remove fenced code markers and headers
+        t_md = time.perf_counter()
         raw = _read_text_file(path)
         text = raw.replace("```", "\n").replace("#", "").strip()
+        timings["md_text_ms"] = (time.perf_counter() - t_md) * 1000
     elif ftype == "html" or suffix in {".html", ".htm"}:
+        t_html = time.perf_counter()
         raw = _read_text_file(path)
-        soup = BeautifulSoup(raw, "lxml")
-        text = _normalize_output_text(soup.get_text("\n"))
+        text = _extract_text_from_html(raw)
+        timings["html_text_ms"] = (time.perf_counter() - t_html) * 1000
+        t_tbl = time.perf_counter()
         html_tables_rows = _extract_html_tables_rows_from_html(raw)
+        timings["html_tables_ms"] = (time.perf_counter() - t_tbl) * 1000
         tables_html = [_render_html_table(rows) for rows in html_tables_rows]
         tables_plain = [_render_plain_table(rows) for rows in html_tables_rows]
         pages = [{"index": 0, "text": text}]
@@ -880,11 +1213,18 @@ def parse_document_to_text(path: Path) -> ParsedDocument:
                 "elements": [{"type": "table_html", "description": html} for html in tables_html],
             })
             text = (text + "\n\n" + "\n\n".join(tables_plain)).strip()
-        return ParsedDocument(full_text=text, pages=pages)
+        t_fields = time.perf_counter()
+        fields = _extract_key_fields_formal_doc(text)
+        if fields:
+            pages.append({"index": len(pages), "text": "", "elements": [{"type": "fields", "description": json.dumps(fields, ensure_ascii=False)}]})
+        timings["fields_extract_ms"] = timings.get("fields_extract_ms", 0.0) + (time.perf_counter() - t_fields) * 1000
+        return ParsedDocument(full_text=text, pages=pages, timings_ms=timings)
     else:
         text = ""
+    t_norm_end = time.perf_counter()
     text = _normalize_output_text(text)
+    timings["normalize_ms"] = timings.get("normalize_ms", 0.0) + (time.perf_counter() - t_norm_end) * 1000
     pages = [{"index": 0, "text": text}] if text else []
-    return ParsedDocument(full_text=text, pages=pages)
+    return ParsedDocument(full_text=text, pages=pages, timings_ms=timings)
 
 

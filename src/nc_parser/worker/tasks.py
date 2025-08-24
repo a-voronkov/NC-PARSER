@@ -70,7 +70,7 @@ def process_file(file_id: str) -> dict[str, Any]:
         "full_text": parsed.full_text,
         "pages": parsed.pages,
         "chunks": [],
-        "processing_metrics": {"timings_ms": {"parse": t_parse}},
+        "processing_metrics": {"timings_ms": {"parse": t_parse, **(parsed.timings_ms or {})}},
     }
     write_result(UUID(file_id), result)
     write_status(UUID(file_id), status="done", progress=1.0, timings_ms={"parse": float(t_parse)})
