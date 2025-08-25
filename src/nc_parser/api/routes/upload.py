@@ -80,13 +80,25 @@ async def upload_complete(
 def status(file_id: UUID) -> JSONResponse:
     # If we have result on disk, it's done
     try:
-        storage.read_result(file_id)
+        result_data = storage.read_result(file_id)
+        # Try to enrich status with caption metrics if available in result
+        caption_metrics = None
+        try:
+            pm = result_data.get("processing_metrics") or {}
+            caption_metrics = pm.get("caption")
+        except Exception:
+            caption_metrics = None
         try:
             st = storage.read_status(file_id)
             st.update({"file_id": str(file_id), "status": "done", "progress": 1.0})
+            if caption_metrics:
+                st["caption"] = caption_metrics
             return JSONResponse(st)
         except Exception:
-            return JSONResponse({"file_id": str(file_id), "status": "done", "progress": 1.0})
+            payload = {"file_id": str(file_id), "status": "done", "progress": 1.0}
+            if caption_metrics:
+                payload["caption"] = caption_metrics
+            return JSONResponse(payload)
     except FileNotFoundError:
         pass
     # Else try to read celery task id and ask celery
@@ -125,6 +137,14 @@ def status(file_id: UUID) -> JSONResponse:
 def result(file_id: UUID) -> JSONResponse:
     try:
         data = storage.read_result(file_id)
+        # Promote caption metrics to top-level field for convenience
+        try:
+            pm = data.get("processing_metrics") or {}
+            caption_metrics = pm.get("caption")
+            if caption_metrics and not data.get("caption"):
+                data["caption"] = caption_metrics
+        except Exception:
+            pass
         return JSONResponse(data)
     except FileNotFoundError:
         return Response(status_code=202)

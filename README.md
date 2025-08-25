@@ -11,6 +11,9 @@
 Requires Docker Desktop.
 
 ```
+# Enable captioning (stub backend) on CPU
+set NC_CAPTIONING_ENABLED=true
+set NC_CAPTION_BACKEND=stub
 docker compose -f docker-compose.cpu.yml up -d --build
 curl -sf http://localhost:8080/healthz
 ```
@@ -27,6 +30,8 @@ Env flags (see `.env.example`):
 - `NC_CAPTION_BACKEND` — `stub|blip2|qwen_vl` (default `stub`, CPU-friendly)
 - `NC_CAPTION_MIN_IMAGE_PX` — minimal image size to caption (default 256)
 - `NC_CAPTION_MAX_IMAGES_PER_DOC` — cap per document (default 16)
+- `NC_CAPTION_MAX_ASPECT_RATIO` — skip extreme aspect images (default 6.0)
+- `NC_CAPTION_MIN_ENTROPY` — skip very flat/decorative images (default 1.2)
 
 E2E scripts:
 - Chunked upload (PowerShell): `scripts/e2e_chunk_upload.ps1`

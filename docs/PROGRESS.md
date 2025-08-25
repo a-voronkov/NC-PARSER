@@ -58,3 +58,48 @@ Readiness blockers (to start Phase 3 эффективно):
 ## Notes
 - Local profile is CPU-only; OCR/Captioning/Donut/LLM toggles are off by default.
 - Next: закрыть хвосты Phase 2 (DOC/RTF/ODT, таблицы, тайминги/нормализация), затем включить GPU‑backend для BLIP‑2 и перейти к Phase 3.
+
+## Snapshot — CPU + Captioning(stub) — 2025‑08‑25
+
+- **Запуск профиля (CPU) с captioning stub**:
+  - Переменные окружения:
+    - `NC_CAPTIONING_ENABLED=true`
+    - `NC_CAPTION_BACKEND=stub`
+  - Команда запуска: `docker compose -f docker-compose.cpu.yml up -d --build`
+
+- **Быстрая API‑проверка (scripts/check_references.ps1)**
+  - Итог: `TOTAL=19 OK=1 FAIL=18`
+
+- **Оффлайн‑проверка (scripts/offline_check_references.py)**
+  - Итог: `TOTAL=19 OK=2 FAIL=17`
+
+- **Примеры image_caption (из `data/results/**/result.json`)**
+
+```text
+FILE_ID=0ad34803-7413-42ec-ae70-b691beace000
+caption_metrics={"count":16,"cache_hits":0,"processed":16,"model":"stub"}
+image_caption=Image 600x777, mode=RGB
+
+FILE_ID=2a02af68-2d24-4fc7-bf4e-d672ae84d4bf
+caption_metrics={"count":1,"cache_hits":1,"processed":0,"model":"stub"}
+image_caption=Image 2480x3508, mode=RGB
+
+FILE_ID=3bce217e-0a50-4422-87d2-987a0efd4614
+caption_metrics={"count":4,"cache_hits":4,"processed":0,"model":"stub"}
+image_caption=Image 339x194, mode=RGB
+
+FILE_ID=f5879dd3-71a6-4dde-ba99-c75f5b768085
+caption_metrics={"count":4,"cache_hits":0,"processed":4,"model":"stub"}
+image_caption=Image 287x153, mode=RGB
+```
+
+- **Метрики `processing_metrics.caption` (примеры)**
+
+```json
+{ "count": 16, "cache_hits": 16, "processed": 0,  "model": "stub" }
+{ "count":  2, "cache_hits":  0, "processed": 2,  "model": "stub" }
+{ "count":  1, "cache_hits":  1, "processed": 0,  "model": "stub" }
+{ "count":  1, "cache_hits":  0, "processed": 1,  "model": "stub" }
+```
+
+Примечание: капшены добавляются как элементы страниц с типом `image_caption`, а агрегированные метрики капшенинга пишутся в `processing_metrics.caption` у итогового `result.json`. Модель — `stub`; кэширование активно по умолчанию.

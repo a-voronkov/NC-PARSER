@@ -11,16 +11,22 @@ services:
       context: .
       dockerfile: Dockerfile
     environment:
-      - NC_APP_HOST=0.0.0.0
-      - NC_APP_PORT=8080
-      - NC_LOG_LEVEL=INFO
-      - NC_DATA_DIR=/data
-      - NC_REDIS_URL=redis://redis:6379/0
-      - NC_OCR_AGENT=tesseract
-      - NC_OCR_GPU=false
-      - NC_CAPTIONING_ENABLED=false
-      - NC_DONUT_ENABLED=false
-      - NC_LLM_ENABLED=false
+      - NC_APP_HOST=${NC_APP_HOST:-0.0.0.0}
+      - NC_APP_PORT=${NC_APP_PORT:-8080}
+      - NC_LOG_LEVEL=${NC_LOG_LEVEL:-INFO}
+      - NC_DATA_DIR=${NC_DATA_DIR:-/data}
+      - NC_REDIS_URL=${NC_REDIS_URL:-redis://redis:6379/0}
+      - NC_OCR_AGENT=${NC_OCR_AGENT:-tesseract}
+      - NC_OCR_GPU=${NC_OCR_GPU:-false}
+      - NC_CAPTIONING_ENABLED=${NC_CAPTIONING_ENABLED:-false}
+      - NC_CAPTION_BACKEND=${NC_CAPTION_BACKEND:-stub}
+      - NC_CAPTION_MIN_IMAGE_PX=${NC_CAPTION_MIN_IMAGE_PX:-256}
+      - NC_CAPTION_MAX_IMAGES_PER_DOC=${NC_CAPTION_MAX_IMAGES_PER_DOC:-16}
+      - NC_CAPTION_CACHE_ENABLED=${NC_CAPTION_CACHE_ENABLED:-1}
+      - NC_CAPTION_MAX_ASPECT_RATIO=${NC_CAPTION_MAX_ASPECT_RATIO:-6.0}
+      - NC_CAPTION_MIN_ENTROPY=${NC_CAPTION_MIN_ENTROPY:-1.2}
+      - NC_DONUT_ENABLED=${NC_DONUT_ENABLED:-false}
+      - NC_LLM_ENABLED=${NC_LLM_ENABLED:-false}
     volumes:
       - ./data:/data
     ports:
@@ -34,11 +40,20 @@ services:
       dockerfile: Dockerfile
     command: ["celery", "-A", "nc_parser.worker.app:celery_app", "worker", "--loglevel=INFO"]
     environment:
-      - NC_REDIS_URL=redis://redis:6379/0
-      - NC_DATA_DIR=/data
-      - NC_LOG_LEVEL=INFO
-      - NC_OCR_DEBUG_DUMP=0
-      - NC_OCR_LANGS=eng
+      - NC_REDIS_URL=${NC_REDIS_URL:-redis://redis:6379/0}
+      - NC_DATA_DIR=${NC_DATA_DIR:-/data}
+      - NC_LOG_LEVEL=${NC_LOG_LEVEL:-INFO}
+      - NC_OCR_DEBUG_DUMP=${NC_OCR_DEBUG_DUMP:-0}
+      - NC_OCR_LANGS=${NC_OCR_LANGS:-eng}
+      - NC_OCR_AGENT=${NC_OCR_AGENT:-tesseract}
+      - NC_OCR_GPU=${NC_OCR_GPU:-false}
+      - NC_CAPTIONING_ENABLED=${NC_CAPTIONING_ENABLED:-false}
+      - NC_CAPTION_BACKEND=${NC_CAPTION_BACKEND:-stub}
+      - NC_CAPTION_MIN_IMAGE_PX=${NC_CAPTION_MIN_IMAGE_PX:-256}
+      - NC_CAPTION_MAX_IMAGES_PER_DOC=${NC_CAPTION_MAX_IMAGES_PER_DOC:-16}
+      - NC_CAPTION_CACHE_ENABLED=${NC_CAPTION_CACHE_ENABLED:-1}
+      - NC_CAPTION_MAX_ASPECT_RATIO=${NC_CAPTION_MAX_ASPECT_RATIO:-6.0}
+      - NC_CAPTION_MIN_ENTROPY=${NC_CAPTION_MIN_ENTROPY:-1.2}
     volumes:
       - ./data:/data
     ports:
@@ -52,11 +67,11 @@ services:
       dockerfile: Dockerfile
     command: ["celery", "-A", "nc_parser.worker.app:celery_app", "beat", "--loglevel=INFO"]
     environment:
-      - NC_REDIS_URL=redis://redis:6379/0
-      - NC_DATA_DIR=/data
-      - NC_LOG_LEVEL=INFO
-      - NC_RETENTION_TTL_HOURS=168
-      - NC_OCR_LANGS=eng
+      - NC_REDIS_URL=${NC_REDIS_URL:-redis://redis:6379/0}
+      - NC_DATA_DIR=${NC_DATA_DIR:-/data}
+      - NC_LOG_LEVEL=${NC_LOG_LEVEL:-INFO}
+      - NC_RETENTION_TTL_HOURS=${NC_RETENTION_TTL_HOURS:-168}
+      - NC_OCR_LANGS=${NC_OCR_LANGS:-eng}
     volumes:
       - ./data:/data
     depends_on:
