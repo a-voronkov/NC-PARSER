@@ -179,6 +179,8 @@ def write_status(
     progress: Optional[float] = None,
     error: Optional[str] = None,
     timings_ms: Optional[dict[str, float]] = None,
+    stage: Optional[str] = None,
+    progress_by_stage: Optional[dict[str, float]] = None,
 ) -> None:
     payload: dict[str, Any] = {"file_id": str(file_id), "status": status}
     if progress is not None:
@@ -187,6 +189,10 @@ def write_status(
         payload["error"] = error
     if timings_ms:
         payload["timings_ms"] = timings_ms
+    if stage:
+        payload["stage"] = stage
+    if progress_by_stage:
+        payload["progress_by_stage"] = progress_by_stage
     _status_path(file_id).write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
 

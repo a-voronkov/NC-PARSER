@@ -34,7 +34,9 @@ curl -sf http://localhost:8080/status/<FILE_ID> | jq
 #   "file_id": "...",
 #   "status": "processing|done|queued|failed",
 #   "progress": 0.0,
-#   "timings_ms": { "parse": 500 }
+#   "timings_ms": { "parse": 500 },
+#   "stage": "caption",
+#   "progress_by_stage": { "ingest": 1.0, "parse": 1.0, "ocr": 0.8, "tables": 0.6, "caption": 0.2 },
 #   "caption": { "count": 3, "cache_hits": 2, "processed": 1, "model": "stub" }
 # }
 ```

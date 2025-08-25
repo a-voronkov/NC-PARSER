@@ -24,7 +24,7 @@ logger = get_logger(__name__)
 def process_file(file_id: str) -> dict[str, Any]:
     """Process file and write a dummy result; placeholder for later phases."""
     # Update status: processing start
-    write_status(UUID(file_id), status="processing", progress=0.1)
+    write_status(UUID(file_id), status="processing", progress=0.1, stage="ingest")
     input_path = get_uploaded_file_path(UUID(file_id))
     # Extra debug: log input path and list of files in uploads/<file_id>
     try:
@@ -58,6 +58,8 @@ def process_file(file_id: str) -> dict[str, Any]:
     except Exception:
         pass
     t0 = time.time()
+    # Update stage: parse
+    write_status(UUID(file_id), status="processing", progress=0.2, stage="parse")
     parsed = parse_document_to_text(input_path)
     t_parse = int((time.time() - t0) * 1000)
     # Optional captioning (stub): if enabled and input is image
@@ -76,7 +78,9 @@ def process_file(file_id: str) -> dict[str, Any]:
         },
     }
     write_result(UUID(file_id), result)
-    write_status(UUID(file_id), status="done", progress=1.0, timings_ms={"parse": float(t_parse)})
+    # Finalize with per-stage progress sketch (heuristic for now)
+    stage_progress = {"ingest": 1.0, "parse": 1.0, "ocr": 1.0, "tables": 1.0, "caption": 1.0}
+    write_status(UUID(file_id), status="done", progress=1.0, timings_ms={"parse": float(t_parse)}, progress_by_stage=stage_progress)
     return result
 
 

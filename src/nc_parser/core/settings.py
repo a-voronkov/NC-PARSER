@@ -7,6 +7,8 @@ from typing import List
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+import subprocess
+import shutil
 
 
 class AppSettings(BaseSettings):
@@ -43,6 +45,7 @@ class AppSettings(BaseSettings):
     donut_enabled: bool = Field(default=False)
     llm_enabled: bool = Field(default=False)
     ocr_langs: str = Field(default="eng")
+    ocr_langs_preferred: str = Field(default="eng,rus,tha,kat,jpn")
     ocr_tesseract_psm: int = Field(default=6)  # Assume a block of text
     ocr_pdf_page_limit: int = Field(default=10)  # Limit pages for OCR fallback
     ocr_pdf_max_mb: int = Field(default=50)  # Skip OCR if file bigger than this
@@ -64,4 +67,39 @@ class AppSettings(BaseSettings):
 def get_settings() -> AppSettings:
     return AppSettings()  # type: ignore[call-arg]
 
+
+
+def get_ocr_langs_resolved() -> str:
+    """Resolve effective Tesseract OCR languages string.
+
+    If NC_OCR_LANGS is 'auto', detect installed languages via `tesseract --list-langs`
+    and intersect with `NC_OCR_LANGS_PREFERRED` order. Returns a '+'-joined string.
+    """
+    s = get_settings()
+    raw = (s.ocr_langs or "").strip()
+    if raw.lower() != "auto":
+        return raw or "eng"
+    if shutil.which("tesseract") is None:
+        return "eng"
+    try:
+        proc = subprocess.run(["tesseract", "--list-langs"], capture_output=True, text=True, check=False)
+        out = (proc.stdout or "") + (proc.stderr or "")
+        installed: list[str] = []
+        for line in out.splitlines():
+            line = line.strip()
+            if not line or line.lower().startswith("list of available languages"):
+                continue
+            installed.append(line)
+        pref = [c.strip() for c in (s.ocr_langs_preferred or "").split(",") if c.strip()]
+        chosen = [c for c in pref if c in installed]
+        if not chosen:
+            if "eng" in installed:
+                chosen = ["eng"]
+            elif installed:
+                chosen = [installed[0]]
+            else:
+                chosen = ["eng"]
+        return "+".join(chosen)
+    except Exception:
+        return "eng"
 

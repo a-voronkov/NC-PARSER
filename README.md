@@ -33,6 +33,22 @@ Env flags (see `.env.example`):
 - `NC_CAPTION_MAX_ASPECT_RATIO` — skip extreme aspect images (default 6.0)
 - `NC_CAPTION_MIN_ENTROPY` — skip very flat/decorative images (default 1.2)
 
+## Run (GPU profile, NVIDIA)
+
+See detailed steps in `docs/GPU_SETUP.md`.
+
+Quick start:
+
+```
+# GPU prerequisites: NVIDIA driver + NVIDIA Container Toolkit on host
+
+set NC_CAPTIONING_ENABLED=true
+set NC_CAPTION_BACKEND=blip2
+set NC_CAPTION_DEVICE=cuda
+docker compose -f docker-compose.gpu.yml up -d --build
+curl -sf http://localhost:8080/healthz
+```
+
 E2E scripts:
 - Chunked upload (PowerShell): `scripts/e2e_chunk_upload.ps1`
 

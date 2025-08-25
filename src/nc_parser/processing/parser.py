@@ -21,7 +21,7 @@ import time
 from charset_normalizer import from_path as detect_encoding_from_path
 import ftfy
 from pypdf import PdfReader
-from nc_parser.core.settings import get_settings
+from nc_parser.core.settings import get_settings, get_ocr_langs_resolved
 from structlog import get_logger
 from nc_parser.processing.captioning import caption_images_with_cache
 
@@ -753,14 +753,14 @@ def _ocr_from_pil_image(pil_img: Image.Image, dump_prefix: str | None = None) ->
             variants=len(variants),
             dump_enabled=settings.ocr_debug_dump,
             prefix=dump_prefix,
-            ocr_langs=settings.ocr_langs,
+            ocr_langs=get_ocr_langs_resolved(),
         )
     except Exception:
         pass
     for im in variants:
         for cfg in configs:
             try:
-                text = ocr_image_to_string(im, lang=settings.ocr_langs, config=cfg).strip()
+                text = ocr_image_to_string(im, lang=get_ocr_langs_resolved(), config=cfg).strip()
                 if text:
                     try:
                         logger.info("ocr_attempt_ok", length=len(text), config=cfg)
@@ -803,7 +803,7 @@ def _ocr_pdf_pages_to_text(path: Path, dpi: int = 300) -> str:
     images = convert_from_path(str(path), dpi=dpi, first_page=1, last_page=limit if limit else None)
     texts: list[str] = []
     for img in images:
-        texts.append(ocr_image_to_string(img, lang=settings.ocr_langs, config=f"--psm {settings.ocr_tesseract_psm}"))
+        texts.append(ocr_image_to_string(img, lang=get_ocr_langs_resolved(), config=f"--psm {settings.ocr_tesseract_psm}"))
     return "\n".join(texts)
 
 

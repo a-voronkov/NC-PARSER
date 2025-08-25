@@ -103,3 +103,9 @@ image_caption=Image 287x153, mode=RGB
 ```
 
 Примечание: капшены добавляются как элементы страниц с типом `image_caption`, а агрегированные метрики капшенинга пишутся в `processing_metrics.caption` у итогового `result.json`. Модель — `stub`; кэширование активно по умолчанию.
+
+## GPU Preparation
+- Added `Dockerfile.gpu` with PyTorch cu121 and project extras `[gpu]`.
+- Added `docker-compose.gpu.yml` with NVIDIA GPU reservation and env vars.
+- Added `docs/GPU_SETUP.md` and updated `README.md` with GPU quick start.
+- Next: wire real GPU caption backends and add weight caching.
