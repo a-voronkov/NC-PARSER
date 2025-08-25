@@ -23,6 +23,10 @@ Services:
 
 Env flags (see `.env.example`):
 - `NC_RETENTION_TTL_HOURS` — TTL for uploads/results cleanup (default 168)
+- `NC_CAPTIONING_ENABLED` — enable image captioning (default false)
+- `NC_CAPTION_BACKEND` — `stub|blip2|qwen_vl` (default `stub`, CPU-friendly)
+- `NC_CAPTION_MIN_IMAGE_PX` — minimal image size to caption (default 256)
+- `NC_CAPTION_MAX_IMAGES_PER_DOC` — cap per document (default 16)
 
 E2E scripts:
 - Chunked upload (PowerShell): `scripts/e2e_chunk_upload.ps1`

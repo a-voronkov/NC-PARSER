@@ -23,6 +23,7 @@ import ftfy
 from pypdf import PdfReader
 from nc_parser.core.settings import get_settings
 from structlog import get_logger
+from nc_parser.processing.captioning import caption_images_with_cache
 
 try:
     from striprtf.striprtf import rtf_to_text  # type: ignore
@@ -37,6 +38,7 @@ class ParsedDocument:
     full_text: str
     pages: list[dict[str, Any]]
     timings_ms: dict[str, float] | None = None
+    metrics: dict[str, Any] | None = None
 
 
 def _read_text_file(path: Path) -> str:
@@ -919,6 +921,7 @@ def parse_document_to_text(path: Path) -> ParsedDocument:
         pass
 
     timings: dict[str, float] = {}
+    metrics: dict[str, Any] = {}
     t_step = time.perf_counter()
     if ftype == "txt" or (suffix in {".txt", ""} and ftype is None):
         text = _read_text_file(path)
@@ -972,6 +975,67 @@ def parse_document_to_text(path: Path) -> ParsedDocument:
                 "elements": [{"type": "image_ocr", "description": t} for t in image_texts],
             })
             text = (text + "\n\n" + "\n\n".join(image_texts)).strip()
+        # Optional captioning for embedded images (gated by flag) — batch with caching and heuristics
+        try:
+            if get_settings().captioning_enabled:
+                settings = get_settings()
+                t_cap = time.perf_counter()
+                images_for_caption: list[Image.Image] = []
+                try:
+                    reader = PdfReader(str(path))
+                    for page in reader.pages:
+                        imgs = getattr(page, "images", []) or []  # type: ignore[attr-defined]
+                        for img in imgs:
+                            from io import BytesIO
+                            try:
+                                bio = BytesIO(img.data)  # type: ignore[attr-defined]
+                                im = Image.open(bio)
+                                im.load()
+                            except Exception:
+                                continue
+                            if max(im.size) < max(1, settings.caption_min_image_px):
+                                continue
+                            # Heuristics: skip extreme aspect ratios and very low-entropy images
+                            try:
+                                w, h = im.size
+                                aspect = (w / max(1, h)) if h > 0 else 999.0
+                                aspect = max(aspect, 1.0 / max(1e-6, aspect))  # unify ratio > 1
+                                if aspect > max(1.0, settings.caption_max_aspect_ratio):
+                                    continue
+                                # entropy proxy: histogram dispersion
+                                hist = im.convert("L").histogram()
+                                total = float(sum(hist)) or 1.0
+                                import math
+                                probs = [v / total for v in hist if v > 0]
+                                ent = -sum(p * math.log(p + 1e-12) for p in probs)
+                                if ent < max(0.0, settings.caption_min_entropy):
+                                    continue
+                            except Exception:
+                                pass
+                            images_for_caption.append(im)
+                            if len(images_for_caption) >= max(1, settings.caption_max_images_per_doc):
+                                break
+                        if len(images_for_caption) >= max(1, settings.caption_max_images_per_doc):
+                            break
+                except Exception:
+                    images_for_caption = []
+                cap_texts: list[str] = []
+                if images_for_caption:
+                    caps, cap_metrics = caption_images_with_cache(images_for_caption)
+                    cap_texts = [c.text for c in caps if c.text]
+                    try:
+                        metrics["caption"] = {"count": len(caps), **cap_metrics}
+                    except Exception:
+                        pass
+                timings["pdf_caption_ms"] = (time.perf_counter() - t_cap) * 1000
+                if cap_texts:
+                    pages.append({
+                        "index": len(pages),
+                        "text": "\n\n".join(cap_texts),
+                        "elements": [{"type": "image_caption", "description": c.text, "model": c.model} for c in caps if c.text],
+                    })
+        except Exception:
+            pass
         if tables:
             tables_html = [_render_html_table(rows) for rows in tables]
             tables_plain = [_render_plain_table(rows) for rows in tables]
@@ -991,7 +1055,7 @@ def parse_document_to_text(path: Path) -> ParsedDocument:
         for p in pages:
             p["text"] = _normalize_output_text(p.get("text", ""))
         timings["normalize_ms"] = (time.perf_counter() - t_norm) * 1000
-        return ParsedDocument(full_text=text, pages=pages, timings_ms=timings)
+        return ParsedDocument(full_text=text, pages=pages, timings_ms=timings, metrics=(metrics or None))
     elif ftype in {"png", "jpg"} or suffix in {".png", ".jpg", ".jpeg", ".bmp", ".tiff"}:
         t_img = time.perf_counter()
         text = _normalize_output_text(_read_image_text(path))
@@ -1020,6 +1084,64 @@ def parse_document_to_text(path: Path) -> ParsedDocument:
                 "elements": [{"type": "image_ocr", "description": t} for t in image_texts],
             })
             text = (text + "\n\n" + "\n\n".join(image_texts)).strip()
+        # Optional captioning for embedded images in DOCX — batch with caching and heuristics
+        try:
+            if get_settings().captioning_enabled:
+                settings = get_settings()
+                t_cap = time.perf_counter()
+                images_for_caption: list[Image.Image] = []
+                try:
+                    import docx  # type: ignore
+                    document = docx.Document(str(path))
+                    rel_parts = document.part.related_parts
+                    for rel_id, part in rel_parts.items():  # type: ignore[assignment]
+                        if getattr(part, "content_type", "").startswith("image/"):
+                            from io import BytesIO
+                            try:
+                                bio = BytesIO(part.blob)  # type: ignore[attr-defined]
+                                img = Image.open(bio)
+                                img.load()
+                            except Exception:
+                                continue
+                            if max(img.size) < max(1, settings.caption_min_image_px):
+                                continue
+                            try:
+                                w, h = img.size
+                                aspect = (w / max(1, h)) if h > 0 else 999.0
+                                aspect = max(aspect, 1.0 / max(1e-6, aspect))
+                                if aspect > max(1.0, settings.caption_max_aspect_ratio):
+                                    continue
+                                hist = img.convert("L").histogram()
+                                total = float(sum(hist)) or 1.0
+                                import math
+                                probs = [v / total for v in hist if v > 0]
+                                ent = -sum(p * math.log(p + 1e-12) for p in probs)
+                                if ent < max(0.0, settings.caption_min_entropy):
+                                    continue
+                            except Exception:
+                                pass
+                            images_for_caption.append(img)
+                            if len(images_for_caption) >= max(1, settings.caption_max_images_per_doc):
+                                break
+                except Exception:
+                    images_for_caption = []
+                cap_texts: list[str] = []
+                if images_for_caption:
+                    caps, cap_metrics = caption_images_with_cache(images_for_caption)
+                    cap_texts = [c.text for c in caps if c.text]
+                    try:
+                        metrics["caption"] = {"count": len(caps), **cap_metrics}
+                    except Exception:
+                        pass
+                timings["docx_caption_ms"] = (time.perf_counter() - t_cap) * 1000
+                if cap_texts:
+                    pages.append({
+                        "index": len(pages),
+                        "text": "\n\n".join(cap_texts),
+                        "elements": [{"type": "image_caption", "description": c.text, "model": c.model} for c in caps if c.text],
+                    })
+        except Exception:
+            pass
         if tables_plain:
             pages.append({
                 "index": len(pages),
@@ -1038,7 +1160,7 @@ def parse_document_to_text(path: Path) -> ParsedDocument:
         for p in pages:
             p["text"] = _normalize_output_text(p.get("text", ""))
         timings["normalize_ms"] = (time.perf_counter() - t_norm) * 1000
-        return ParsedDocument(full_text=text, pages=pages if pages else [], timings_ms=timings)
+        return ParsedDocument(full_text=text, pages=pages if pages else [], timings_ms=timings, metrics=(metrics or None))
     elif suffix == ".doc":
         t_doc = time.perf_counter()
         text = _normalize_output_text(_read_doc_binary_text(path))
@@ -1070,7 +1192,7 @@ def parse_document_to_text(path: Path) -> ParsedDocument:
         for p in pages:
             p["text"] = _normalize_output_text(p.get("text", ""))
         timings["normalize_ms"] = (time.perf_counter() - t_norm) * 1000
-        return ParsedDocument(full_text=text, pages=pages, timings_ms=timings)
+        return ParsedDocument(full_text=text, pages=pages, timings_ms=timings, metrics=(metrics or None))
     elif ftype == "rtf" or suffix == ".rtf":
         t_rtf = time.perf_counter()
         text = _normalize_output_text(_read_rtf_text(path))
@@ -1112,7 +1234,7 @@ def parse_document_to_text(path: Path) -> ParsedDocument:
         for p in pages:
             p["text"] = _normalize_output_text(p.get("text", ""))
         timings["normalize_ms"] = (time.perf_counter() - t_norm) * 1000
-        return ParsedDocument(full_text=text, pages=pages, timings_ms=timings)
+        return ParsedDocument(full_text=text, pages=pages, timings_ms=timings, metrics=(metrics or None))
     elif suffix == ".odt":
         # Extract text and tables from content.xml
         t_odt = time.perf_counter()
@@ -1156,7 +1278,7 @@ def parse_document_to_text(path: Path) -> ParsedDocument:
         for p in pages:
             p["text"] = _normalize_output_text(p.get("text", ""))
         timings["normalize_ms"] = (time.perf_counter() - t_norm) * 1000
-        return ParsedDocument(full_text=text, pages=pages, timings_ms=timings)
+        return ParsedDocument(full_text=text, pages=pages, timings_ms=timings, metrics=(metrics or None))
     elif ftype == "csv" or suffix in {".csv"}:
         # Parse CSV to HTML table and plain text
         try:
@@ -1186,7 +1308,7 @@ def parse_document_to_text(path: Path) -> ParsedDocument:
                 {"index": 0, "text": plain, "elements": [{"type": "table_html", "description": html}]}
             ]
             timings["csv_parse_ms"] = (time.perf_counter() - t_step) * 1000
-            return ParsedDocument(full_text=plain, pages=pages, timings_ms=timings)
+            return ParsedDocument(full_text=plain, pages=pages, timings_ms=timings, metrics=(metrics or None))
         except Exception:
             text = ""
     elif suffix in {".md", ".markdown"}:
@@ -1218,13 +1340,13 @@ def parse_document_to_text(path: Path) -> ParsedDocument:
         if fields:
             pages.append({"index": len(pages), "text": "", "elements": [{"type": "fields", "description": json.dumps(fields, ensure_ascii=False)}]})
         timings["fields_extract_ms"] = timings.get("fields_extract_ms", 0.0) + (time.perf_counter() - t_fields) * 1000
-        return ParsedDocument(full_text=text, pages=pages, timings_ms=timings)
+        return ParsedDocument(full_text=text, pages=pages, timings_ms=timings, metrics=(metrics or None))
     else:
         text = ""
     t_norm_end = time.perf_counter()
     text = _normalize_output_text(text)
     timings["normalize_ms"] = timings.get("normalize_ms", 0.0) + (time.perf_counter() - t_norm_end) * 1000
     pages = [{"index": 0, "text": text}] if text else []
-    return ParsedDocument(full_text=text, pages=pages, timings_ms=timings)
+    return ParsedDocument(full_text=text, pages=pages, timings_ms=timings, metrics=(metrics or None))
 
 

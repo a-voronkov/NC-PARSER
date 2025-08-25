@@ -30,6 +30,16 @@ class AppSettings(BaseSettings):
     ocr_agent: str = Field(default="tesseract")  # paddle|tesseract
     ocr_gpu: bool = Field(default=False)
     captioning_enabled: bool = Field(default=False)
+    caption_backend: str = Field(default="stub")  # stub|blip2|qwen_vl
+    caption_batch_size: int = Field(default=8)
+    caption_device: str = Field(default="cpu")  # cpu|cuda
+    caption_max_concurrency: int = Field(default=1)
+    caption_min_image_px: int = Field(default=256)  # min(max(width, height)) to consider
+    caption_max_images_per_doc: int = Field(default=16)
+    caption_cache_enabled: bool = Field(default=True)
+    caption_cache_dir: Path | None = Field(default=None)
+    caption_max_aspect_ratio: float = Field(default=6.0)  # wider/taller than this is likely decorative
+    caption_min_entropy: float = Field(default=1.2)  # low entropy means likely flat/decorative
     donut_enabled: bool = Field(default=False)
     llm_enabled: bool = Field(default=False)
     ocr_langs: str = Field(default="eng")

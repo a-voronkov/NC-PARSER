@@ -35,6 +35,7 @@ curl -sf http://localhost:8080/status/<FILE_ID> | jq
 #   "status": "processing|done|queued|failed",
 #   "progress": 0.0,
 #   "timings_ms": { "parse": 500 }
+#   "caption": { "count": 3, "cache_hits": 2, "processed": 1, "model": "stub" }
 # }
 ```
 - GET `/result/{file_id}`

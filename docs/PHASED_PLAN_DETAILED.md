@@ -115,15 +115,15 @@ This document expands `docs/PHASED_PLAN.md` into atomic steps with explicit inpu
 - Inputs
   - Elements with image regions.
 - Actions
-  1) Crop per-image regions; create a pluggable captioning interface.
-  2) Backends: BLIP-2 (default), optional Qwen2-VL for higher quality.
-  3) Heuristics: caption only relevant images (diagrams, charts), not decorative.
-  4) GPU throttling and batching.
-  5) Attach descriptions to page text and block metadata.
+  1) Crop per-image regions; create a pluggable captioning interface. DONE (stub, batch, cache)
+  2) Backends: BLIP-2 (default), optional Qwen2-VL for higher quality. STUBS ADDED
+  3) Heuristics: caption only relevant images (diagrams, charts), not decorative. DONE (min size, aspect, entropy, per-doc cap)
+  4) Batching (CPU profile) and caching; GPU throttling planned for GPU profile.
+  5) Attach descriptions to page text and block metadata. DONE
 - Commands
   - Caption smoke: process a sample with and without captions; compare runtime and output.
 - Success criteria
-  - Relevant images have useful descriptions; clear provenance (backend and model name).
+  - Relevant images have useful descriptions; clear provenance (backend and model name). PARTIAL (stub backends)
 - Self-test
   - Ensure caching avoids re-captioning identical crops; validate timing metrics per image.
 - If fails

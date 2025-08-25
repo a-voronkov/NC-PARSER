@@ -69,15 +69,15 @@ This plan is derived from `initial_plan.pdf` and structured into phases with tas
 ## Phase 3 — Visual Elements Description (Captioning / Qwen-VL selectively)
 - Purpose: Enrich non-text elements with descriptions.
 - Tasks:
-  - Extract per-image crops; pluggable caption backends (BLIP-2 default, optional Qwen2-VL-7B).
-  - Heuristics for when to use heavy model; GPU throttling.
+  - Extract per-image crops; pluggable caption backends (stub CPU now; BLIP-2/Qwen-VL planned).
+  - Heuristics for when to use model; batching and caching; GPU throttling later.
   - Insert descriptions into page text and block metadata.
 - Do not:
   - Caption every image blindly.
   - Duplicate descriptions excessively.
 - Exit criteria:
-  - Descriptions present for relevant images; backends switchable.
-  - Fallbacks work under GPU pressure.
+  - Descriptions present for relevant images; backends switchable (stub now; real backends later).
+  - Fallbacks work under GPU pressure (planned).
 - Checklists:
   - Batch processing; caching; per-image timing and model names in metrics.
 

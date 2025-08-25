@@ -44,13 +44,16 @@ Exit criteria (Phase 2): базовый парсинг для текстовых
 
 ## Phase 3 — Visual Elements Description (Captioning)
 - [x] Каркас captioning (stub) и интеграция по флагу
+- [x] Бэкенд-интерфейс + кэш (CPU-friendly, stub/blip2-stub/qwen-vl-stub)
+- [x] Батч‑капшенинг с кэшем, вставка в pages и метрики (model, cache_hits)
+- [x] Эвристики отбора: min size, max images per doc, аспект‑ratio, энтропия
+- [ ] Троттлинг/пулы по backends (конкурентность)
 - [ ] BLIP-2 backend (GPU) — планируется на GPU-сервере
-- [ ] Heuristics/батчинг/троттлинг
 
 Readiness blockers (to start Phase 3 эффективно):
-- [ ] Из Phase 2: стабильные элементы страниц (таблицы как HTML+plain), нормализованный текст
+- [ ] Из Phase 2: стабильные элементы страниц (таблицы как HTML+plain), нормализованный текст — база есть, ведём стабилизацию RTF/DOC/ODT
 - [ ] Готовность окружения с GPU (образы/драйверы, доступ к весам BLIP‑2)
-- [ ] Базовые метрики/тайминги для оценки накладных расходов captioning
+- [x] Базовые метрики/тайминги для оценки накладных расходов captioning — добавлены (pdf_caption_ms/docx_caption_ms, caption metrics)
 
 ## Notes
 - Local profile is CPU-only; OCR/Captioning/Donut/LLM toggles are off by default.
